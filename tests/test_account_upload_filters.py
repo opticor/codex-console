@@ -110,6 +110,25 @@ def test_list_accounts_filters_by_upload_targets(monkeypatch):
     assert [item.email for item in cpa_and_tm.accounts] == ["both@example.com"]
     assert cpa_and_tm.accounts[0].tm_uploaded is True
 
+    no_upload = asyncio.run(
+        accounts_routes.list_accounts(
+            page=1,
+            page_size=20,
+            status=None,
+            email_service=None,
+            role_tag=None,
+            upload_targets=["none"],
+            uploaded=None,
+            cpa_uploaded=None,
+            sub2api_uploaded=None,
+            pool_state=None,
+            biz_tag=None,
+            search=None,
+        )
+    )
+    assert no_upload.total == 1
+    assert [item.email for item in no_upload.accounts] == ["none@example.com"]
+
     legacy_any_uploaded = asyncio.run(
         accounts_routes.list_accounts(
             page=1,

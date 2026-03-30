@@ -301,7 +301,22 @@ function initEventListeners() {
 
     elements.uploadFilterButtons.forEach((button) => {
         button.addEventListener('click', () => {
-            button.classList.toggle('active');
+            const target = String(button.dataset.uploadTarget || '').trim();
+            const nextActive = !button.classList.contains('active');
+            if (target === 'none' && nextActive) {
+                elements.uploadFilterButtons.forEach((item) => {
+                    item.classList.toggle('active', item === button);
+                });
+            } else {
+                button.classList.toggle('active');
+                if (nextActive) {
+                    elements.uploadFilterButtons.forEach((item) => {
+                        if (item.dataset.uploadTarget === 'none') {
+                            item.classList.remove('active');
+                        }
+                    });
+                }
+            }
             currentPage = 1;
             resetSelectAllPages();
             loadAccounts();

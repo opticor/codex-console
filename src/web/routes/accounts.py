@@ -555,6 +555,8 @@ def _normalize_upload_targets(values: Optional[List[str]]) -> List[str]:
         "s2a": "s2a",
         "sub2api": "s2a",
         "tm": "tm",
+        "none": "none",
+        "unuploaded": "none",
     }
     for raw in values:
         key = alias_map.get(str(raw or "").strip().lower())
@@ -575,6 +577,14 @@ def _apply_any_uploaded_filter(query):
     )
 
 
+def _apply_no_uploaded_filter(query):
+    return query.filter(
+        Account.cpa_uploaded.isnot(True),
+        Account.sub2api_uploaded.isnot(True),
+        Account.tm_uploaded.isnot(True),
+    )
+
+
 def _apply_upload_targets_filter(query, upload_targets: Optional[List[str]]):
     normalized_targets = _normalize_upload_targets(upload_targets)
     if not normalized_targets:
@@ -587,6 +597,8 @@ def _apply_upload_targets_filter(query, upload_targets: Optional[List[str]]):
             query = query.filter(Account.sub2api_uploaded.is_(True))
         elif target == "tm":
             query = query.filter(Account.tm_uploaded.is_(True))
+        elif target == "none":
+            query = _apply_no_uploaded_filter(query)
     return query
 
 
@@ -1357,7 +1369,7 @@ async def list_accounts(
     status: Optional[str] = Query(None, description="状态筛选"),
     email_service: Optional[str] = Query(None, description="邮箱服务筛选"),
     role_tag: Optional[str] = Query(None, description="角色标签筛选：parent/child/none"),
-    upload_targets: Optional[List[str]] = Query(None, description="上传平台筛选：cpa/s2a/tm，可重复传参"),
+    upload_targets: Optional[List[str]] = Query(None, description="上传平台筛选：cpa/s2a/tm/none，可重复传参"),
     uploaded: Optional[bool] = Query(None, description="统一上传标记筛选，仅支持 true"),
     cpa_uploaded: Optional[bool] = Query(None, description="CPA 上传标记筛选"),
     sub2api_uploaded: Optional[bool] = Query(None, description="Sub2API 上传标记筛选"),
