@@ -6,7 +6,6 @@ import asyncio
 import logging
 import uuid
 import random
-from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional, Dict, Tuple, Set
 
@@ -21,7 +20,11 @@ from ...config.constants import (
 )
 from ...database import crud
 from ...database.session import get_db
-from ...database.models import RegistrationTask, Proxy
+from ...database.models import RegistrationTask
+from ...core.dynamic_proxy import (
+    AutoProxySelectionResult as ProxySelectionResult,
+    resolve_auto_proxy_for_task,
+)
 from ...core.register import RegistrationEngine, RegistrationResult
 from ...services import EmailServiceFactory, EmailServiceType
 from ...config.settings import get_settings, normalize_proxy_assignment_strategy
@@ -37,15 +40,6 @@ batch_tasks: Dict[str, dict] = {}
 
 
 # ============== Proxy Helper Functions ==============
-
-@dataclass
-class ProxySelectionResult:
-    proxy_url: Optional[str]
-    proxy_id: Optional[int]
-    proxy_source: str
-    strategy: str
-
-
 _PROXY_RETRYABLE_MARKERS = (
     "proxy",
     "代理",
@@ -110,65 +104,13 @@ def get_proxy_for_registration(
 ) -> ProxySelectionResult:
     """
     为注册任务选择代理。
-
-    顺序：
-    1. 按配置策略从启用代理列表里选一个
-    2. 列表为空时尝试动态代理（最多两次获取）
-    3. 动态代理不可用时回退到全局静态代理
     """
-    settings = get_settings()
-    strategy = normalize_proxy_assignment_strategy(
-        getattr(settings, "proxy_assignment_strategy", "round_robin")
-    )
-
-    enabled_proxies = crud.get_enabled_proxies(db)
-    if enabled_proxies:
-        selected_proxy = crud.select_proxy_for_registration(
-            db,
-            strategy=strategy,
-            exclude_ids=exclude_proxy_ids or set(),
-        )
-        if selected_proxy:
-            return ProxySelectionResult(
-                proxy_url=selected_proxy.proxy_url,
-                proxy_id=selected_proxy.id,
-                proxy_source="proxy_list",
-                strategy=strategy,
-            )
-        return ProxySelectionResult(
-            proxy_url=None,
-            proxy_id=None,
-            proxy_source="proxy_list_exhausted",
-            strategy=strategy,
-        )
-
-    if dynamic_attempt_count < 2:
-        from ...core.dynamic_proxy import get_dynamic_proxy_url
-
-        dynamic_proxy = get_dynamic_proxy_url()
-        if dynamic_proxy:
-            return ProxySelectionResult(
-                proxy_url=dynamic_proxy,
-                proxy_id=None,
-                proxy_source="dynamic",
-                strategy=strategy,
-            )
-
-    if allow_settings_fallback:
-        static_proxy = settings.proxy_url
-        if static_proxy:
-            return ProxySelectionResult(
-                proxy_url=static_proxy,
-                proxy_id=None,
-                proxy_source="settings",
-                strategy=strategy,
-            )
-
-    return ProxySelectionResult(
-        proxy_url=None,
-        proxy_id=None,
-        proxy_source="none",
-        strategy=strategy,
+    return resolve_auto_proxy_for_task(
+        settings=get_settings(),
+        db=db,
+        exclude_proxy_ids=exclude_proxy_ids,
+        dynamic_attempt_count=dynamic_attempt_count,
+        allow_settings_fallback=allow_settings_fallback,
     )
 
 
@@ -573,13 +515,14 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
 
                 actual_proxy_url = current_proxy.proxy_url
                 proxy_id = current_proxy.proxy_id
+                use_direct_connection = current_proxy.proxy_source == "direct"
 
                 if not actual_proxy_url and current_proxy.proxy_source == "proxy_list_exhausted":
                     result = RegistrationResult(success=False, error_message="所有可用代理均已尝试且仍失败")
                     log_callback("[代理] 代理列表已全部尝试，当前任务不再继续重试")
                     break
 
-                if not actual_proxy_url:
+                if not actual_proxy_url and not use_direct_connection:
                     result = RegistrationResult(success=False, error_message="没有可用代理可供当前任务使用")
                     log_callback("[代理] 未找到可用代理，任务结束")
                     break
@@ -597,6 +540,8 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                     log_callback(f"[代理] 代理列表不可用，使用动态代理: {_mask_proxy_for_log(actual_proxy_url)}")
                 elif current_proxy.proxy_source == "settings":
                     log_callback(f"[代理] 代理列表与动态代理不可用，回退全局静态代理: {_mask_proxy_for_log(actual_proxy_url)}")
+                elif current_proxy.proxy_source == "direct":
+                    log_callback("[代理] 未配置可用代理源，当前任务将直连运行")
                 elif current_proxy.proxy_source == "explicit":
                     log_callback(f"[代理] 使用显式传入代理: {_mask_proxy_for_log(actual_proxy_url)}")
 

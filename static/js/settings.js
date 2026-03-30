@@ -55,6 +55,7 @@ const elements = {
     proxyBatchImportForm: document.getElementById('proxy-batch-import-form'),
     proxyBatchImportText: document.getElementById('proxy-batch-import-text'),
     proxyBatchImportResult: document.getElementById('proxy-batch-import-result'),
+    proxyAssignmentStrategy: document.getElementById('proxy-assignment-strategy'),
     // 动态代理设置
     dynamicProxyForm: document.getElementById('dynamic-proxy-form'),
     testDynamicProxyBtn: document.getElementById('test-dynamic-proxy-btn'),
@@ -102,6 +103,7 @@ let proxySortState = {
     key: null,
     direction: null
 };
+let currentProxySettingsSnapshot = null;
 
 const PROXY_SORT_DEFAULT_DIRECTIONS = {
     last_used: 'desc',
@@ -316,6 +318,9 @@ function initEventListeners() {
     if (elements.testDynamicProxyBtn) {
         elements.testDynamicProxyBtn.addEventListener('click', handleTestDynamicProxy);
     }
+    if (elements.proxyAssignmentStrategy) {
+        elements.proxyAssignmentStrategy.addEventListener('change', handleSaveProxyAssignmentStrategy);
+    }
 
     // 验证码设置
     if (elements.emailCodeForm) {
@@ -401,13 +406,22 @@ function initEventListeners() {
 async function loadSettings() {
     try {
         const data = await api.get('/settings');
+        currentProxySettingsSnapshot = {
+            dynamic_enabled: Boolean(data.proxy?.dynamic_enabled),
+            dynamic_api_url: data.proxy?.dynamic_api_url || '',
+            dynamic_api_key_header: data.proxy?.dynamic_api_key_header || 'X-API-Key',
+            dynamic_result_field: data.proxy?.dynamic_result_field || '',
+            assignment_strategy: data.proxy?.assignment_strategy || 'round_robin',
+        };
 
         // 动态代理设置
         document.getElementById('dynamic-proxy-enabled').checked = data.proxy?.dynamic_enabled || false;
         document.getElementById('dynamic-proxy-api-url').value = data.proxy?.dynamic_api_url || '';
         document.getElementById('dynamic-proxy-api-key-header').value = data.proxy?.dynamic_api_key_header || 'X-API-Key';
         document.getElementById('dynamic-proxy-result-field').value = data.proxy?.dynamic_result_field || '';
-        document.getElementById('proxy-assignment-strategy').value = data.proxy?.assignment_strategy || 'round_robin';
+        if (elements.proxyAssignmentStrategy) {
+            elements.proxyAssignmentStrategy.value = data.proxy?.assignment_strategy || 'round_robin';
+        }
 
         // 注册配置
         document.getElementById('max-retries').value = data.registration?.max_retries || 3;
@@ -1452,20 +1466,58 @@ async function handleSaveOutlookSettings(e) {
 
 async function handleSaveDynamicProxy(e) {
     e.preventDefault();
-    const data = {
-        enabled: document.getElementById('dynamic-proxy-enabled').checked,
-        api_url: document.getElementById('dynamic-proxy-api-url').value.trim(),
-        api_key: document.getElementById('dynamic-proxy-api-key').value || null,
-        api_key_header: document.getElementById('dynamic-proxy-api-key-header').value.trim() || 'X-API-Key',
-        result_field: document.getElementById('dynamic-proxy-result-field').value.trim(),
-        assignment_strategy: document.getElementById('proxy-assignment-strategy').value || 'round_robin'
-    };
+    const data = buildDynamicProxySettingsPayload({ useSnapshot: false, includeApiKey: true });
     try {
         await api.post('/settings/proxy/dynamic', data);
         toast.success('动态代理设置已保存');
         document.getElementById('dynamic-proxy-api-key').value = '';
+        await loadSettings();
     } catch (error) {
         toast.error('保存失败: ' + error.message);
+    }
+}
+
+function buildDynamicProxySettingsPayload(options = {}) {
+    const useSnapshot = options.useSnapshot === true;
+    const snapshot = currentProxySettingsSnapshot || {};
+    const payload = {
+        enabled: useSnapshot
+            ? Boolean(snapshot.dynamic_enabled)
+            : document.getElementById('dynamic-proxy-enabled').checked,
+        api_url: useSnapshot
+            ? String(snapshot.dynamic_api_url || '').trim()
+            : document.getElementById('dynamic-proxy-api-url').value.trim(),
+        api_key_header: useSnapshot
+            ? String(snapshot.dynamic_api_key_header || 'X-API-Key').trim() || 'X-API-Key'
+            : document.getElementById('dynamic-proxy-api-key-header').value.trim() || 'X-API-Key',
+        result_field: useSnapshot
+            ? String(snapshot.dynamic_result_field || '').trim()
+            : document.getElementById('dynamic-proxy-result-field').value.trim(),
+        assignment_strategy: elements.proxyAssignmentStrategy?.value || snapshot.assignment_strategy || 'round_robin',
+    };
+    if (options.includeApiKey === true) {
+        payload.api_key = document.getElementById('dynamic-proxy-api-key').value || null;
+    }
+    return payload;
+}
+
+async function handleSaveProxyAssignmentStrategy() {
+    if (!elements.proxyAssignmentStrategy) return;
+
+    const select = elements.proxyAssignmentStrategy;
+    const previousValue = currentProxySettingsSnapshot?.assignment_strategy || 'round_robin';
+    const data = buildDynamicProxySettingsPayload({ useSnapshot: true, includeApiKey: false });
+
+    select.disabled = true;
+    try {
+        await api.post('/settings/proxy/dynamic', data);
+        toast.success('自动代理策略已更新');
+        await loadSettings();
+    } catch (error) {
+        select.value = previousValue;
+        toast.error('保存失败: ' + error.message);
+    } finally {
+        select.disabled = false;
     }
 }
 

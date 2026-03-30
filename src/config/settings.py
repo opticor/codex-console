@@ -280,7 +280,7 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
         db_key="proxy.assignment_strategy",
         default_value="round_robin",
         category=SettingCategory.PROXY,
-        description="代理列表分配策略 (round_robin/random/least_recently_used)"
+        description="自动代理策略 (round_robin/random/least_recently_used/default_only/no_proxy)"
     ),
 
     # 注册配置
@@ -502,7 +502,13 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
 # 属性名到数据库键名的映射（用于向后兼容）
 DB_SETTING_KEYS = {name: defn.db_key for name, defn in SETTING_DEFINITIONS.items()}
 
-PROXY_ASSIGNMENT_STRATEGIES = ("round_robin", "random", "least_recently_used")
+PROXY_ASSIGNMENT_STRATEGIES = (
+    "round_robin",
+    "random",
+    "least_recently_used",
+    "default_only",
+    "no_proxy",
+)
 
 # 类型定义映射
 SETTING_TYPES: Dict[str, Type] = {

@@ -38,7 +38,7 @@ from ...core.upload.cpa_upload import generate_token_json, batch_upload_to_cpa, 
 from ...core.upload.team_manager_upload import upload_to_team_manager, batch_upload_to_team_manager
 from ...core.upload.sub2api_upload import batch_upload_to_sub2api, upload_to_sub2api
 
-from ...core.dynamic_proxy import get_proxy_url_for_task
+from ...core.dynamic_proxy import resolve_auto_proxy_for_task
 from ...database import crud
 from ...database.models import Account
 from ...database.session import get_db
@@ -84,17 +84,13 @@ _account_async_executor = ThreadPoolExecutor(
 
 
 def _get_proxy(request_proxy: Optional[str] = None) -> Optional[str]:
-    """获取代理 URL，策略与注册流程一致：代理列表 → 动态代理 → 静态配置"""
+    """获取代理 URL，自动路径与注册流程保持一致。"""
     if request_proxy:
         return request_proxy
+    settings = get_settings()
     with get_db() as db:
-        proxy = crud.get_random_proxy(db)
-        if proxy:
-            return proxy.proxy_url
-    proxy_url = get_proxy_url_for_task()
-    if proxy_url:
-        return proxy_url
-    return get_settings().proxy_url
+        result = resolve_auto_proxy_for_task(settings=settings, db=db)
+    return result.proxy_url
 
 
 def _apply_status_filter(query, status: Optional[str]):

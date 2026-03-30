@@ -1,19 +1,59 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>系统设置 - OpenAI 注册系统</title>
     <link rel="stylesheet" href="/static/css/style.css?v={{ static_version }}">
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚙️</text></svg>">
+    <link rel="icon"
+        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚙️</text></svg>">
     <style>
         #proxy-tab .proxy-table-container {
             max-height: 640px;
             min-height: 320px;
             overflow-y: auto;
         }
+
+        #proxy-tab .proxy-header-actions {
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-sm);
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        #proxy-tab .proxy-strategy-inline {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 3px 10px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background: var(--surface);
+        }
+
+        #proxy-tab .proxy-strategy-inline label {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+
+        #proxy-tab .proxy-strategy-select {
+            min-width: 156px;
+            padding: 5px 24px 5px 0;
+            border: none;
+            background: transparent;
+            box-shadow: none;
+            font-size: 0.8125rem;
+        }
+
+        #proxy-tab .proxy-strategy-select:focus {
+            box-shadow: none;
+        }
     </style>
 </head>
+
 <body>
     <div class="container">
         <!-- 导航栏 -->
@@ -32,10 +72,10 @@
                 <a href="/settings" class="nav-link active">设置</a>
                 <a href="/logout" class="nav-link">退出</a>
             </div>
-                        <div class="nav-actions">
-            <a href="/selfcheck" class="selfcheck-toggle" title="系统自检">⚙️</a>
-            <button class="theme-toggle" onclick="theme.toggle()" title="切换主题">🌙</button>
-        </div>
+            <div class="nav-actions">
+                <a href="/selfcheck" class="selfcheck-toggle" title="系统自检">⚙️</a>
+                <button class="theme-toggle" onclick="theme.toggle()" title="切换主题">🌙</button>
+            </div>
         </nav>
 
         <!-- 主内容区 -->
@@ -62,7 +102,7 @@
                 <div class="card" style="margin-top: var(--spacing-lg);">
                     <div class="card-header">
                         <h3>动态代理配置</h3>
-                        <span class="hint">当代理列表没有可用代理时，才会回退到动态代理</span>
+                        <span class="hint">自动代理策略在下方代理列表顶部设置；当策略跳过代理列表或列表无可用代理时，会先尝试动态代理，再尝试全局静态代理</span>
                     </div>
                     <div class="card-body">
                         <form id="dynamic-proxy-form">
@@ -74,36 +114,33 @@
                             </div>
                             <div class="form-group">
                                 <label for="dynamic-proxy-api-url">代理 API 地址</label>
-                                <input type="text" id="dynamic-proxy-api-url" name="api_url" placeholder="http://api.example.com/get_proxy">
+                                <input type="text" id="dynamic-proxy-api-url" name="api_url"
+                                    placeholder="http://api.example.com/get_proxy">
                                 <small style="color: var(--text-muted);">每次注册任务启动时调用此 API 获取代理 URL</small>
                             </div>
                             <div class="form-row">
                                 <div class="form-group">
                                     <label for="dynamic-proxy-api-key">API 密钥 (可选)</label>
-                                    <input type="password" id="dynamic-proxy-api-key" name="api_key" placeholder="留空保持不变" autocomplete="new-password">
+                                    <input type="password" id="dynamic-proxy-api-key" name="api_key"
+                                        placeholder="留空保持不变" autocomplete="new-password">
                                 </div>
                                 <div class="form-group">
                                     <label for="dynamic-proxy-api-key-header">密钥请求头</label>
-                                    <input type="text" id="dynamic-proxy-api-key-header" name="api_key_header" value="X-API-Key">
+                                    <input type="text" id="dynamic-proxy-api-key-header" name="api_key_header"
+                                        value="X-API-Key">
                                 </div>
                             </div>
                             <div class="form-group">
                                 <label for="dynamic-proxy-result-field">JSON 字段路径 (可选)</label>
-                                <input type="text" id="dynamic-proxy-result-field" name="result_field" placeholder="例如: data.proxy 或留空使用响应原文">
-                                <small style="color: var(--text-muted);">若 API 返回 JSON，填写点号分隔的字段路径提取代理 URL；留空则将响应原文作为代理 URL</small>
-                            </div>
-                            <div class="form-group">
-                                <label for="proxy-assignment-strategy">代理分配策略</label>
-                                <select id="proxy-assignment-strategy" name="assignment_strategy">
-                                    <option value="round_robin">轮询分配</option>
-                                    <option value="random">随机分配</option>
-                                    <option value="least_recently_used">最少最近使用</option>
-                                </select>
-                                <small style="color: var(--text-muted);">仅在注册任务未手填代理时生效，优先从启用代理列表里按该策略选择代理。</small>
+                                <input type="text" id="dynamic-proxy-result-field" name="result_field"
+                                    placeholder="例如: data.proxy 或留空使用响应原文">
+                                <small style="color: var(--text-muted);">若 API 返回 JSON，填写点号分隔的字段路径提取代理 URL；留空则将响应原文作为代理
+                                    URL</small>
                             </div>
                             <div class="form-actions">
                                 <button type="submit" class="btn btn-primary">💾 保存设置</button>
-                                <button type="button" class="btn btn-secondary" id="test-dynamic-proxy-btn">🔌 测试动态代理</button>
+                                <button type="button" class="btn btn-secondary" id="test-dynamic-proxy-btn">🔌
+                                    测试动态代理</button>
                             </div>
                         </form>
                     </div>
@@ -112,8 +149,21 @@
                 <!-- 代理列表 -->
                 <div class="card" style="margin-top: var(--spacing-lg);">
                     <div class="card-header">
-                        <h3>代理列表</h3>
-                        <div style="display: flex; gap: var(--spacing-sm);">
+                        <div>
+                            <h3>代理列表</h3>
+                        </div>
+                        <div class="proxy-header-actions">
+                            <div class="proxy-strategy-inline">
+                                <label for="proxy-assignment-strategy">自动代理</label>
+                                <select id="proxy-assignment-strategy" name="assignment_strategy"
+                                    class="form-select proxy-strategy-select">
+                                    <option value="default_only">使用默认代理</option>
+                                    <option value="round_robin">轮询分配</option>
+                                    <option value="random">随机分配</option>
+                                    <option value="least_recently_used">最少最近使用</option>
+                                    <option value="no_proxy">不使用代理</option>
+                                </select>
+                            </div>
                             <button class="btn btn-secondary btn-sm" id="test-all-proxies-btn">🔌 测试全部</button>
                             <button class="btn btn-secondary btn-sm" id="proxy-batch-select-btn">☑️ 批量选择</button>
                             <button class="btn btn-secondary btn-sm" id="proxy-batch-import-btn">📥 批量导入</button>
@@ -121,11 +171,14 @@
                         </div>
                     </div>
                     <div class="card-body" style="padding: 0;">
-                        <div id="proxy-batch-actions" style="display:none; padding: var(--spacing-sm) var(--spacing-md); border-bottom: 1px solid var(--border-light); background: var(--surface-muted);">
+                        <div id="proxy-batch-actions"
+                            style="display:none; padding: var(--spacing-sm) var(--spacing-md); border-bottom: 1px solid var(--border-light); background: var(--surface-muted);">
                             <div style="display:flex; gap: var(--spacing-sm); align-items:center; flex-wrap: wrap;">
                                 <span id="proxy-batch-selected-count" style="color: var(--text-muted);">已选择 0 项</span>
-                                <button class="btn btn-secondary btn-sm" id="proxy-batch-enable-btn" disabled>批量启用</button>
-                                <button class="btn btn-secondary btn-sm" id="proxy-batch-disable-btn" disabled>批量停用</button>
+                                <button class="btn btn-secondary btn-sm" id="proxy-batch-enable-btn"
+                                    disabled>批量启用</button>
+                                <button class="btn btn-secondary btn-sm" id="proxy-batch-disable-btn"
+                                    disabled>批量停用</button>
                                 <button class="btn btn-danger btn-sm" id="proxy-batch-delete-btn" disabled>批量删除</button>
                                 <button class="btn btn-ghost btn-sm" id="proxy-batch-cancel-btn">取消选择</button>
                             </div>
@@ -143,10 +196,14 @@
                                         <th>地址</th>
                                         <th style="width: 60px;">默认</th>
                                         <th style="width: 80px;">状态</th>
-                                        <th class="sortable-th" data-proxy-sort-key="last_used" style="width: 140px; cursor: pointer;">最后成功时间</th>
-                                        <th class="sortable-th" data-proxy-sort-key="success_count" style="width: 90px; cursor: pointer;">成功数</th>
-                                        <th class="sortable-th" data-proxy-sort-key="failure_count" style="width: 90px; cursor: pointer;">失败数</th>
-                                        <th class="sortable-th" data-proxy-sort-key="success_rate" style="width: 90px; cursor: pointer;">成功率</th>
+                                        <th class="sortable-th" data-proxy-sort-key="last_used"
+                                            style="width: 140px; cursor: pointer;">最后成功时间</th>
+                                        <th class="sortable-th" data-proxy-sort-key="success_count"
+                                            style="width: 90px; cursor: pointer;">成功数</th>
+                                        <th class="sortable-th" data-proxy-sort-key="failure_count"
+                                            style="width: 90px; cursor: pointer;">失败数</th>
+                                        <th class="sortable-th" data-proxy-sort-key="success_rate"
+                                            style="width: 90px; cursor: pointer;">成功率</th>
                                         <th style="width: 180px;">操作</th>
                                     </tr>
                                 </thead>
@@ -178,12 +235,14 @@
                         <form id="system-settings-form">
                             <div class="form-group">
                                 <label for="webui-port">WebUI 端口</label>
-                                <input type="number" id="webui-port" name="port" min="1" max="65535" placeholder="例如 1688">
+                                <input type="number" id="webui-port" name="port" min="1" max="65535"
+                                    placeholder="例如 1688">
                                 <small style="color: var(--text-muted);">修改端口后需重启服务生效</small>
                             </div>
                             <div class="form-group">
                                 <label for="webui-access-password">访问密码</label>
-                                <input type="password" id="webui-access-password" name="access_password" placeholder="留空保持不变" autocomplete="new-password">
+                                <input type="password" id="webui-access-password" name="access_password"
+                                    placeholder="留空保持不变" autocomplete="new-password">
                             </div>
                             <div class="form-actions">
                                 <button type="submit" class="btn btn-primary">💾 保存系统设置</button>
@@ -217,7 +276,8 @@
                                 </div>
                                 <div class="form-group">
                                     <label for="proxy-item-host">主机地址</label>
-                                    <input type="text" id="proxy-item-host" name="host" required placeholder="127.0.0.1">
+                                    <input type="text" id="proxy-item-host" name="host" required
+                                        placeholder="127.0.0.1">
                                 </div>
                                 <div class="form-group">
                                     <label for="proxy-item-port">端口</label>
@@ -231,7 +291,8 @@
                                 </div>
                                 <div class="form-group">
                                     <label for="proxy-item-password">密码 (可选)</label>
-                                    <input type="password" id="proxy-item-password" name="password" autocomplete="new-password">
+                                    <input type="password" id="proxy-item-password" name="password"
+                                        autocomplete="new-password">
                                 </div>
                             </div>
                             <div class="form-actions">
@@ -286,8 +347,10 @@ user:pass@127.0.0.1:7890
                             </div>
                             <div id="proxy-batch-import-result" class="alert alert-info" style="display:none;"></div>
                             <div class="form-actions">
-                                <button type="button" class="btn btn-secondary" id="cancel-proxy-batch-import-btn">取消</button>
-                                <button type="submit" class="btn btn-primary" id="submit-proxy-batch-import-btn">📥 开始导入</button>
+                                <button type="button" class="btn btn-secondary"
+                                    id="cancel-proxy-batch-import-btn">取消</button>
+                                <button type="submit" class="btn btn-primary" id="submit-proxy-batch-import-btn">📥
+                                    开始导入</button>
                             </div>
                         </form>
                     </div>
@@ -316,7 +379,10 @@ user:pass@127.0.0.1:7890
                                     </tr>
                                 </thead>
                                 <tbody id="cpa-services-table">
-                                    <tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;">加载中...</td></tr>
+                                    <tr>
+                                        <td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;">
+                                            加载中...</td>
+                                    </tr>
                                 </tbody>
                             </table>
                         </div>
@@ -343,7 +409,10 @@ user:pass@127.0.0.1:7890
                                     </tr>
                                 </thead>
                                 <tbody id="sub2api-services-table">
-                                    <tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;">加载中...</td></tr>
+                                    <tr>
+                                        <td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;">
+                                            加载中...</td>
+                                    </tr>
                                 </tbody>
                             </table>
                         </div>
@@ -369,7 +438,10 @@ user:pass@127.0.0.1:7890
                                     </tr>
                                 </thead>
                                 <tbody id="tm-services-table">
-                                    <tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:20px;">加载中...</td></tr>
+                                    <tr>
+                                        <td colspan="5" style="text-align:center;color:var(--text-muted);padding:20px;">
+                                            加载中...</td>
+                                    </tr>
                                 </tbody>
                             </table>
                         </div>
@@ -397,7 +469,8 @@ user:pass@127.0.0.1:7890
                             </div>
                             <div class="form-group">
                                 <label for="tm-service-key">API Key</label>
-                                <input type="password" id="tm-service-key" placeholder="编辑时留空则保持原值" autocomplete="new-password">
+                                <input type="password" id="tm-service-key" placeholder="编辑时留空则保持原值"
+                                    autocomplete="new-password">
                             </div>
                             <div class="form-row">
                                 <div class="form-group">
@@ -414,7 +487,8 @@ user:pass@127.0.0.1:7890
                             </div>
                             <div class="form-actions">
                                 <button type="submit" class="btn btn-primary">💾 保存</button>
-                                <button type="button" class="btn btn-secondary" id="test-tm-service-btn">🔌 测试连接</button>
+                                <button type="button" class="btn btn-secondary" id="test-tm-service-btn">🔌
+                                    测试连接</button>
                                 <button type="button" class="btn btn-secondary" id="cancel-tm-service-btn">取消</button>
                             </div>
                         </form>
@@ -442,7 +516,8 @@ user:pass@127.0.0.1:7890
                             </div>
                             <div class="form-group">
                                 <label for="sub2api-service-key">API Key</label>
-                                <input type="password" id="sub2api-service-key" placeholder="编辑时留空则保持原值" autocomplete="new-password">
+                                <input type="password" id="sub2api-service-key" placeholder="编辑时留空则保持原值"
+                                    autocomplete="new-password">
                             </div>
                             <div class="form-group">
                                 <label for="sub2api-service-target-type">导入目标类型</label>
@@ -466,8 +541,10 @@ user:pass@127.0.0.1:7890
                             </div>
                             <div class="form-actions">
                                 <button type="submit" class="btn btn-primary">💾 保存</button>
-                                <button type="button" class="btn btn-secondary" id="test-sub2api-service-btn">🔌 测试连接</button>
-                                <button type="button" class="btn btn-secondary" id="cancel-sub2api-service-btn">取消</button>
+                                <button type="button" class="btn btn-secondary" id="test-sub2api-service-btn">🔌
+                                    测试连接</button>
+                                <button type="button" class="btn btn-secondary"
+                                    id="cancel-sub2api-service-btn">取消</button>
                             </div>
                         </form>
                     </div>
@@ -495,11 +572,13 @@ user:pass@127.0.0.1:7890
                             </div>
                             <div class="form-group">
                                 <label for="cpa-service-token">API Token</label>
-                                <input type="password" id="cpa-service-token" placeholder="编辑时留空则保持原值" autocomplete="new-password">
+                                <input type="password" id="cpa-service-token" placeholder="编辑时留空则保持原值"
+                                    autocomplete="new-password">
                             </div>
                             <div class="form-group">
                                 <label for="cpa-service-proxy-url">代理地址（可选）</label>
-                                <input type="text" id="cpa-service-proxy-url" placeholder="http://user:pass@host:port 或 socks5://host:port">
+                                <input type="text" id="cpa-service-proxy-url"
+                                    placeholder="http://user:pass@host:port 或 socks5://host:port">
                                 <p class="hint">留空时使用全局代理配置</p>
                             </div>
                             <div class="form-row">
@@ -517,7 +596,8 @@ user:pass@127.0.0.1:7890
                             </div>
                             <div class="form-actions">
                                 <button type="submit" class="btn btn-primary">💾 保存</button>
-                                <button type="button" class="btn btn-secondary" id="test-cpa-service-btn">🔌 测试连接</button>
+                                <button type="button" class="btn btn-secondary" id="test-cpa-service-btn">🔌
+                                    测试连接</button>
                                 <button type="button" class="btn btn-secondary" id="cancel-cpa-service-btn">取消</button>
                             </div>
                         </form>
@@ -570,7 +650,8 @@ user:pass@127.0.0.1:7890
 
                                 <div class="form-group">
                                     <label for="password-length">密码长度</label>
-                                    <input type="number" id="password-length" name="default_password_length" value="12" min="8" max="32">
+                                    <input type="number" id="password-length" name="default_password_length" value="12"
+                                        min="8" max="32">
                                 </div>
                             </div>
 
@@ -617,13 +698,15 @@ user:pass@127.0.0.1:7890
                             <div class="form-row">
                                 <div class="form-group">
                                     <label for="email-code-timeout">等待超时 (秒)</label>
-                                    <input type="number" id="email-code-timeout" name="timeout" value="120" min="30" max="600">
+                                    <input type="number" id="email-code-timeout" name="timeout" value="120" min="30"
+                                        max="600">
                                     <span class="hint">等待验证码的最大时间，建议 60-300 秒</span>
                                 </div>
 
                                 <div class="form-group">
                                     <label for="email-code-poll-interval">轮询间隔 (秒)</label>
-                                    <input type="number" id="email-code-poll-interval" name="poll_interval" value="3" min="1" max="30">
+                                    <input type="number" id="email-code-poll-interval" name="poll_interval" value="3"
+                                        min="1" max="30">
                                     <span class="hint">检查邮箱的时间间隔，建议 2-5 秒</span>
                                 </div>
                             </div>
@@ -692,11 +775,5 @@ user:pass@127.0.0.1:7890
     <script src="/static/js/utils.js?v={{ static_version }}"></script>
     <script src="/static/js/settings.js?v={{ static_version }}"></script>
 </body>
+
 </html>
-
-
-
-
-
-
-

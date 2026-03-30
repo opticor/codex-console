@@ -647,6 +647,14 @@ def select_proxy_for_registration(
     normalized_strategy = normalize_proxy_assignment_strategy(strategy)
     normalized_excludes = _normalize_proxy_exclude_ids(exclude_ids)
 
+    if normalized_strategy == "default_only":
+        return (
+            _enabled_proxy_query(db, normalized_excludes)
+            .filter(Proxy.is_default == True)
+            .order_by(asc(Proxy.id))
+            .first()
+        )
+
     if normalized_strategy == "random":
         proxies = _enabled_proxy_query(db, normalized_excludes).order_by(asc(Proxy.id)).all()
         if not proxies:

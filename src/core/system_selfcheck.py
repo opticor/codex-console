@@ -19,7 +19,7 @@ from curl_cffi import requests as cffi_requests
 
 from ..config.constants import AccountStatus
 from ..config.settings import get_settings
-from ..core.dynamic_proxy import get_proxy_url_for_task
+from ..core.dynamic_proxy import resolve_auto_proxy_for_task
 from ..core.timezone_utils import to_shanghai_iso
 from ..database import crud
 from ..database.models import Account, BindCardTask, SelfCheckRun
@@ -107,19 +107,16 @@ def _safe_dict(value: Any) -> Dict[str, Any]:
 def _resolve_selfcheck_proxy_url() -> Optional[str]:
     """
     为系统自检解析代理 URL。
-    优先级与业务任务保持一致：代理列表默认项 -> 动态代理/静态代理配置。
+    自动解析逻辑与业务任务保持一致。
     """
-    # 1) 代理列表（优先默认代理，否则首个可用代理）
     try:
+        settings = get_settings()
         with get_db() as db:
-            proxy = crud.get_random_proxy(db)
-            if proxy and str(proxy.proxy_url or "").strip():
-                return str(proxy.proxy_url).strip()
+            result = resolve_auto_proxy_for_task(settings=settings, db=db)
+        return result.proxy_url
     except Exception:
-        logger.debug("从代理列表解析自检代理失败", exc_info=True)
-
-    # 2) 动态代理 / 静态代理
-    return get_proxy_url_for_task() or get_settings().proxy_url
+        logger.debug("解析自检代理失败", exc_info=True)
+        return None
 
 
 def _serialize_run(run: SelfCheckRun) -> Dict[str, Any]:
