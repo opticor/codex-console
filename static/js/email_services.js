@@ -57,6 +57,7 @@ const elements = {
     addMoemailFields: document.getElementById('add-moemail-fields'),
     addYydsMailFields: document.getElementById('add-yydsmail-fields'),
     addTempmailFields: document.getElementById('add-tempmail-fields'),
+    addTempmailCleanupGroup: document.getElementById('add-tempmail-cleanup-group'),
     addDuckmailFields: document.getElementById('add-duckmail-fields'),
     addFreemailFields: document.getElementById('add-freemail-fields'),
     addImapFields: document.getElementById('add-imap-fields'),
@@ -69,6 +70,7 @@ const elements = {
     editMoemailFields: document.getElementById('edit-moemail-fields'),
     editYydsMailFields: document.getElementById('edit-yydsmail-fields'),
     editTempmailFields: document.getElementById('edit-tempmail-fields'),
+    editTempmailCleanupGroup: document.getElementById('edit-tempmail-cleanup-group'),
     editDuckmailFields: document.getElementById('edit-duckmail-fields'),
     editFreemailFields: document.getElementById('edit-freemail-fields'),
     editImapFields: document.getElementById('edit-imap-fields'),
@@ -196,6 +198,10 @@ function switchAddSubType(subType) {
     elements.addMoemailFields.style.display = subType === 'moemail' ? '' : 'none';
     elements.addYydsMailFields.style.display = subType === 'yydsmail' ? '' : 'none';
     elements.addTempmailFields.style.display = (subType === 'tempmail' || subType === 'cloudmail') ? '' : 'none';
+    elements.addTempmailCleanupGroup.style.display = subType === 'tempmail' ? '' : 'none';
+    if (subType !== 'tempmail') {
+        document.getElementById('custom-tm-cleanup-on-failure').checked = false;
+    }
     elements.addDuckmailFields.style.display = subType === 'duckmail' ? '' : 'none';
     elements.addFreemailFields.style.display = subType === 'freemail' ? '' : 'none';
     elements.addImapFields.style.display = subType === 'imap' ? '' : 'none';
@@ -207,6 +213,10 @@ function switchEditSubType(subType) {
     elements.editMoemailFields.style.display = subType === 'moemail' ? '' : 'none';
     elements.editYydsMailFields.style.display = subType === 'yydsmail' ? '' : 'none';
     elements.editTempmailFields.style.display = (subType === 'tempmail' || subType === 'cloudmail') ? '' : 'none';
+    elements.editTempmailCleanupGroup.style.display = subType === 'tempmail' ? '' : 'none';
+    if (subType !== 'tempmail') {
+        document.getElementById('edit-tm-cleanup-on-failure').checked = false;
+    }
     elements.editDuckmailFields.style.display = subType === 'duckmail' ? '' : 'none';
     elements.editFreemailFields.style.display = subType === 'freemail' ? '' : 'none';
     elements.editImapFields.style.display = subType === 'imap' ? '' : 'none';
@@ -514,6 +524,9 @@ async function handleAddCustom(e) {
             domain: formData.get('tm_domain'),
             enable_prefix: true
         };
+        if (subType === 'tempmail') {
+            config.cleanup_on_task_failure = formData.get('cleanup_on_task_failure') === 'on';
+        }
     } else if (subType === 'duckmail') {
         serviceType = 'duck_mail';
         config = {
@@ -772,6 +785,7 @@ async function editCustomService(id, subType) {
             document.getElementById('edit-tm-admin-password').value = '';
             document.getElementById('edit-tm-admin-password').placeholder = service.config?.admin_password ? '已设置，留空保持不变' : '请输入 Admin 密码';
             document.getElementById('edit-tm-domain').value = service.config?.domain || '';
+            document.getElementById('edit-tm-cleanup-on-failure').checked = Boolean(service.config?.cleanup_on_task_failure) && resolvedSubType === 'tempmail';
         } else if (resolvedSubType === 'duckmail') {
             document.getElementById('edit-dm-base-url').value = service.config?.base_url || '';
             document.getElementById('edit-dm-api-key').value = '';
@@ -828,6 +842,9 @@ async function handleEditCustom(e) {
         };
         const pwd = formData.get('tm_admin_password');
         if (pwd && pwd.trim()) config.admin_password = pwd.trim();
+        if (subType === 'tempmail') {
+            config.cleanup_on_task_failure = formData.get('cleanup_on_task_failure') === 'on';
+        }
     } else if (subType === 'duckmail') {
         config = {
             base_url: formData.get('dm_base_url'),

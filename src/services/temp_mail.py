@@ -15,7 +15,7 @@ from email.message import Message
 from email.policy import default as email_policy
 from email.utils import parsedate_to_datetime
 from html import unescape
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Set
 
 from .base import BaseEmailService, EmailServiceError, EmailServiceType
 from ..core.http_client import HTTPClient, RequestConfig
@@ -42,6 +42,7 @@ class TempMailService(BaseEmailService):
                 - admin_password: Admin 密码，对应 x-admin-auth header (必需)
                 - domain: 邮箱域名，如 example.com (必需)
                 - enable_prefix: 是否启用前缀，默认 True
+                - cleanup_on_task_failure: 任务失败时是否清理本次任务使用的邮件和邮箱，默认 False
                 - timeout: 请求超时时间，默认 30
                 - max_retries: 最大重试次数，默认 3
             name: 服务名称
@@ -55,6 +56,7 @@ class TempMailService(BaseEmailService):
 
         default_config = {
             "enable_prefix": True,
+            "cleanup_on_task_failure": False,
             "timeout": 30,
             "max_retries": 3,
         }
@@ -71,8 +73,13 @@ class TempMailService(BaseEmailService):
         self._email_cache: Dict[str, Dict[str, Any]] = {}
         # 记录每个邮箱上一次成功使用的邮件 ID，避免重复使用旧验证码
         self._last_used_mail_ids: Dict[str, str] = {}
+        # 记录任务过程中触达过的邮件 ID，用于失败时最佳努力清理
+        self._task_mail_ids_by_email: Dict[str, Set[str]] = {}
         # /admin/mails 接口对 limit 参数较严格，这里统一限制上限，避免 400 Invalid limit
         self._admin_mails_limit_max = 50
+
+    def should_cleanup_on_task_failure(self) -> bool:
+        return bool(self.config.get("cleanup_on_task_failure"))
 
     def _normalize_admin_limit(self, value: Any, default: int = 50) -> int:
         try:
@@ -247,6 +254,7 @@ class TempMailService(BaseEmailService):
 
         otp_keywords = (
             "verification code",
+            "verification",
             "verify",
             "one-time code",
             "one time code",
@@ -475,6 +483,135 @@ class TempMailService(BaseEmailService):
                 logger.debug(f"TempMail 详情接口 {attempt['path']} 读取失败: {e}")
         return None
 
+    def _track_task_mail_id(self, email: str, mail_id: str) -> None:
+        target = str(email or "").strip().lower()
+        mail_key = str(mail_id or "").strip()
+        if not target or not mail_key:
+            return
+        self._task_mail_ids_by_email.setdefault(target, set()).add(mail_key)
+
+    def _drop_local_email_state(self, email: Optional[str], email_info: Optional[Dict[str, Any]] = None) -> None:
+        normalized_email = str(email or "").strip().lower()
+        candidate_emails = {normalized_email} if normalized_email else set()
+        info = email_info or {}
+        for key in ("email", "id", "service_id"):
+            value = str(info.get(key) or "").strip().lower()
+            if value and "@" in value:
+                candidate_emails.add(value)
+
+        emails_to_remove: Set[str] = set()
+        for cached_email, cached_info in list(self._email_cache.items()):
+            cache_candidates = {
+                str(cached_email or "").strip().lower(),
+                str(cached_info.get("email") or "").strip().lower(),
+                str(cached_info.get("id") or "").strip().lower(),
+                str(cached_info.get("service_id") or "").strip().lower(),
+            }
+            if candidate_emails.intersection(value for value in cache_candidates if value):
+                emails_to_remove.add(str(cached_email or "").strip())
+
+        for cached_email in emails_to_remove:
+            self._email_cache.pop(cached_email, None)
+            self._last_used_mail_ids.pop(cached_email, None)
+            self._last_used_mail_ids.pop(cached_email.lower(), None)
+            self._task_mail_ids_by_email.pop(cached_email, None)
+            self._task_mail_ids_by_email.pop(cached_email.lower(), None)
+
+        if normalized_email:
+            self._last_used_mail_ids.pop(normalized_email, None)
+            self._task_mail_ids_by_email.pop(normalized_email, None)
+
+    def _delete_address_by_id(self, address_id: str) -> bool:
+        address_key = str(address_id or "").strip()
+        if not address_key:
+            return False
+        self._make_request("DELETE", f"/admin/delete_address/{address_key}")
+        return True
+
+    def _lookup_address_id_by_email(self, email: Optional[str]) -> str:
+        target = str(email or "").strip().lower()
+        if not target:
+            return ""
+
+        try:
+            response = self._make_request(
+                "GET",
+                "/admin/address",
+                params={"limit": 1, "offset": 0, "query": target},
+            )
+        except Exception as e:
+            logger.warning("TempMail 失败清理查询地址 ID 失败 email=%s err=%s", target, e)
+            return ""
+
+        results = response.get("results") if isinstance(response, dict) else None
+        if not isinstance(results, list):
+            return ""
+
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip().lower()
+            if name != target:
+                continue
+            value = item.get("id")
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return ""
+
+    def cleanup_failed_task_resources(
+        self,
+        email_info: Optional[Dict[str, Any]] = None,
+        mailbox_email: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        normalized_email = str(mailbox_email or (email_info or {}).get("email") or "").strip().lower()
+        info = dict(email_info or {})
+        if not self.should_cleanup_on_task_failure():
+            return {
+                "enabled": False,
+                "address_deleted": False,
+                "lookup_attempted": False,
+                "lookup_matched": False,
+                "skipped": True,
+            }
+
+        address_deleted = False
+        lookup_attempted = False
+        lookup_matched = False
+        address_id = str(
+            info.get("address_id")
+            or info.get("addressId")
+            or ""
+        ).strip()
+
+        try:
+            if not address_id and normalized_email:
+                lookup_attempted = True
+                address_id = self._lookup_address_id_by_email(normalized_email)
+                lookup_matched = bool(address_id)
+                if lookup_matched:
+                    info["address_id"] = address_id
+
+            if address_id:
+                try:
+                    address_deleted = self._delete_address_by_id(address_id)
+                    logger.info("TempMail 失败清理已删除邮箱地址: %s", address_id)
+                except Exception as e:
+                    logger.warning("TempMail 失败清理删除邮箱地址失败: %s", e)
+            else:
+                logger.warning("TempMail 失败清理未找到邮箱地址 ID，跳过删除: %s", normalized_email)
+        finally:
+            self._drop_local_email_state(normalized_email, info)
+
+        self.update_status(True)
+        return {
+            "enabled": True,
+            "address_deleted": address_deleted,
+            "address_id": address_id,
+            "lookup_attempted": lookup_attempted,
+            "lookup_matched": lookup_matched,
+            "skipped": False,
+        }
+
     def _parse_mail_timestamp(self, value: Any) -> Optional[float]:
         """将邮件时间字段解析为 Unix 时间戳（秒）。"""
         if value is None:
@@ -625,8 +762,8 @@ class TempMailService(BaseEmailService):
 
         # 生成随机邮箱名
         letters = ''.join(random.choices(string.ascii_lowercase, k=5))
-        digits = ''.join(random.choices(string.digits, k=random.randint(1, 3)))
-        suffix = ''.join(random.choices(string.ascii_lowercase, k=random.randint(1, 3)))
+        digits = ''.join(random.choices(string.digits, k=random.randint(1, 4)))
+        suffix = ''.join(random.choices(string.ascii_lowercase, k=random.randint(1, 4)))
         name = letters + digits + suffix
 
         domain = self.config["domain"]
@@ -735,6 +872,7 @@ class TempMailService(BaseEmailService):
 
                 for mail in mails:
                     mail_id = self._extract_mail_id(mail)
+                    self._track_task_mail_id(email, mail_id)
                     if mail_id in seen_mail_ids:
                         continue
 

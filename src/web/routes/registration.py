@@ -7,7 +7,7 @@ import logging
 import uuid
 import random
 from datetime import datetime
-from typing import List, Optional, Dict, Tuple, Set
+from typing import List, Optional, Dict, Tuple, Set, Any
 
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from pydantic import BaseModel, Field
@@ -93,6 +93,63 @@ def is_retryable_proxy_error(error_message: Optional[str]) -> bool:
     if any(marker in text for marker in _PROXY_NON_RETRYABLE_HINTS):
         return False
     return any(marker in text for marker in _PROXY_RETRYABLE_MARKERS)
+
+
+def _cleanup_failed_email_resources(
+    email_service: Any,
+    *,
+    engine: Optional[RegistrationEngine],
+    log_callback,
+) -> None:
+    cleanup = getattr(email_service, "cleanup_failed_task_resources", None)
+    should_cleanup = getattr(email_service, "should_cleanup_on_task_failure", None)
+    if not callable(cleanup):
+        return
+    if callable(should_cleanup) and not should_cleanup():
+        return
+
+    email_info = getattr(engine, "email_info", None) if engine else None
+    mailbox_email = (
+        getattr(engine, "inbox_email", None)
+        or getattr(engine, "email", None)
+        if engine else None
+    )
+
+    try:
+        cleanup_result = cleanup(email_info=email_info, mailbox_email=mailbox_email)
+    except Exception as e:
+        log_callback(f"[邮箱清理] 任务失败后清理资源异常: {e}")
+        return
+
+    if not isinstance(cleanup_result, dict):
+        log_callback("[邮箱清理] 任务失败后清理已执行")
+        return
+
+    if cleanup_result.get("skipped"):
+        log_callback("[邮箱清理] 当前服务未启用失败清理，跳过")
+        return
+
+    address_deleted = bool(cleanup_result.get("address_deleted"))
+    address_id = str(cleanup_result.get("address_id") or "").strip()
+    lookup_attempted = bool(cleanup_result.get("lookup_attempted"))
+    lookup_matched = bool(cleanup_result.get("lookup_matched"))
+
+    if address_deleted:
+        log_callback(
+            f"[邮箱清理] 已删除本次任务使用的邮箱地址"
+            f"{f' (address_id={address_id})' if address_id else ''}"
+        )
+        return
+
+    if lookup_attempted and not lookup_matched:
+        log_callback("[邮箱清理] 未找到邮箱地址 ID，跳过删除")
+        return
+
+    if address_id:
+        log_callback(f"[邮箱清理] 删除邮箱地址失败 (address_id={address_id})")
+        return
+
+    log_callback("[邮箱清理] 未找到邮箱地址 ID，跳过删除")
 
 
 def get_proxy_for_registration(
@@ -547,6 +604,8 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
 
                 crud.update_registration_task(db, task_uuid, proxy=actual_proxy_url)
 
+                email_service = None
+                engine = None
                 try:
                     email_service = _build_email_service_for_task(
                         db,
@@ -571,6 +630,12 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                     break
 
                 error_message = str(result.error_message or "").strip()
+                if email_service is not None:
+                    _cleanup_failed_email_resources(
+                        email_service,
+                        engine=engine,
+                        log_callback=log_callback,
+                    )
                 if current_proxy.proxy_source == "proxy_list" and proxy_id is not None and proxy_id not in failed_proxy_ids:
                     crud.increment_proxy_failure(db, proxy_id)
                     failed_proxy_ids.add(proxy_id)

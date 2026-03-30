@@ -304,6 +304,12 @@
                             <label for="custom-tm-domain">邮箱域名</label>
                             <input type="text" id="custom-tm-domain" name="tm_domain" placeholder="example.com">
                         </div>
+                        <div class="form-group" id="add-tempmail-cleanup-group" style="display:none;">
+                            <label>
+                                <input type="checkbox" id="custom-tm-cleanup-on-failure" name="cleanup_on_task_failure">
+                                任务失败时清理邮件和邮箱
+                            </label>
+                        </div>
                     </div>
                     <!-- DuckMail 字段 -->
                     <div id="add-duckmail-fields" style="display:none;">
@@ -455,6 +461,12 @@
                         <div class="form-group">
                             <label for="edit-tm-domain">邮箱域名</label>
                             <input type="text" id="edit-tm-domain" name="tm_domain" placeholder="example.com">
+                        </div>
+                        <div class="form-group" id="edit-tempmail-cleanup-group" style="display:none;">
+                            <label>
+                                <input type="checkbox" id="edit-tm-cleanup-on-failure" name="cleanup_on_task_failure">
+                                任务失败时清理邮件和邮箱
+                            </label>
                         </div>
                     </div>
                     <!-- DuckMail 字段 -->

@@ -491,6 +491,240 @@ def test_run_sync_registration_task_retries_next_proxy_on_proxy_error(monkeypatc
     assert save_calls == [("done@example.com", "child", "child")]
 
 
+def test_run_sync_registration_task_cleans_failed_temp_mail_before_proxy_retry(monkeypatch):
+    logs = []
+    cleanup_calls = []
+    selected_proxies = []
+
+    class DummyTask:
+        pass
+
+    class FakeEmailService:
+        def should_cleanup_on_task_failure(self):
+            return True
+
+        def cleanup_failed_task_resources(self, email_info=None, mailbox_email=None):
+            cleanup_calls.append({
+                "email_info": email_info,
+                "mailbox_email": mailbox_email,
+            })
+            return {
+                "skipped": False,
+                "address_deleted": True,
+                "deleted_mail_ids": [],
+                "failed_mail_ids": [],
+            }
+
+    class FakeEngine:
+        run_count = 0
+
+        def __init__(self, email_service, proxy_url, callback_logger, task_uuid):
+            selected_proxies.append(proxy_url)
+            self.email_info = {"email": "cleanup@example.com", "address_id": "addr-1"}
+            self.inbox_email = "cleanup@example.com"
+
+        def run(self):
+            FakeEngine.run_count += 1
+            if FakeEngine.run_count == 1:
+                return RegistrationResult(success=False, error_message="proxy connect error")
+            return RegistrationResult(success=True, email="done@example.com", metadata={})
+
+        def save_to_database(self, result, account_label=None, role_tag=None):
+            return True
+
+    @contextmanager
+    def fake_get_db():
+        yield object()
+
+    proxies = [
+        SimpleNamespace(id=1, proxy_url="http://proxy-1:8001"),
+        SimpleNamespace(id=2, proxy_url="http://proxy-2:8002"),
+    ]
+    email_service = FakeEmailService()
+
+    monkeypatch.setattr(registration_routes, "get_db", fake_get_db)
+    monkeypatch.setattr(registration_routes, "RegistrationEngine", FakeEngine)
+    monkeypatch.setattr(registration_routes, "_build_email_service_for_task", lambda *args, **kwargs: email_service)
+    monkeypatch.setattr(registration_routes.task_manager, "is_cancelled", lambda task_uuid: False)
+    monkeypatch.setattr(registration_routes.task_manager, "update_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        registration_routes.task_manager,
+        "create_log_callback",
+        lambda *args, **kwargs: (lambda message: logs.append(message)),
+    )
+    monkeypatch.setattr(registration_routes.crud, "update_registration_task", lambda db, task_uuid, **kwargs: DummyTask())
+    monkeypatch.setattr(registration_routes.crud, "increment_proxy_success", lambda db, proxy_id: True)
+    monkeypatch.setattr(registration_routes.crud, "increment_proxy_failure", lambda db, proxy_id: True)
+    monkeypatch.setattr(registration_routes.crud, "get_enabled_proxies", lambda db: proxies)
+    monkeypatch.setattr(
+        registration_routes.crud,
+        "select_proxy_for_registration",
+        lambda db, strategy, exclude_ids=None: next(
+            (proxy for proxy in proxies if proxy.id not in set(exclude_ids or [])),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        registration_routes,
+        "get_settings",
+        lambda: SimpleNamespace(
+            proxy_assignment_strategy="round_robin",
+            proxy_url=None,
+            proxy_dynamic_enabled=False,
+            proxy_dynamic_api_url="",
+        ),
+    )
+
+    registration_routes._run_sync_registration_task(
+        task_uuid="task-cleanup",
+        email_service_type="tempmail",
+        proxy=None,
+        email_service_config=None,
+    )
+
+    assert selected_proxies == ["http://proxy-1:8001", "http://proxy-2:8002"]
+    assert cleanup_calls == [{
+        "email_info": {"email": "cleanup@example.com", "address_id": "addr-1"},
+        "mailbox_email": "cleanup@example.com",
+    }]
+    cleanup_log_index = next(i for i, item in enumerate(logs) if "[邮箱清理]" in item)
+    retry_log_index = next(i for i, item in enumerate(logs) if "切换到下一个代理重试" in item)
+    assert cleanup_log_index < retry_log_index
+
+
+def test_run_sync_registration_task_does_not_clean_on_success(monkeypatch):
+    cleanup_calls = []
+
+    class DummyTask:
+        pass
+
+    class FakeEmailService:
+        def should_cleanup_on_task_failure(self):
+            return True
+
+        def cleanup_failed_task_resources(self, email_info=None, mailbox_email=None):
+            cleanup_calls.append((email_info, mailbox_email))
+            return {"skipped": False}
+
+    class FakeEngine:
+        def __init__(self, email_service, proxy_url, callback_logger, task_uuid):
+            self.email_info = {"email": "cleanup@example.com", "address_id": "addr-1"}
+            self.inbox_email = "cleanup@example.com"
+
+        def run(self):
+            return RegistrationResult(success=True, email="direct@example.com", metadata={})
+
+        def save_to_database(self, result, account_label=None, role_tag=None):
+            return True
+
+    @contextmanager
+    def fake_get_db():
+        yield object()
+
+    monkeypatch.setattr(registration_routes, "get_db", fake_get_db)
+    monkeypatch.setattr(registration_routes, "RegistrationEngine", FakeEngine)
+    monkeypatch.setattr(registration_routes, "_build_email_service_for_task", lambda *args, **kwargs: FakeEmailService())
+    monkeypatch.setattr(registration_routes.task_manager, "is_cancelled", lambda task_uuid: False)
+    monkeypatch.setattr(registration_routes.task_manager, "update_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        registration_routes.task_manager,
+        "create_log_callback",
+        lambda *args, **kwargs: (lambda message: None),
+    )
+    monkeypatch.setattr(registration_routes.crud, "update_registration_task", lambda db, task_uuid, **kwargs: DummyTask())
+    monkeypatch.setattr(registration_routes.crud, "increment_proxy_success", lambda db, proxy_id: True)
+    monkeypatch.setattr(registration_routes.crud, "increment_proxy_failure", lambda db, proxy_id: True)
+    monkeypatch.setattr(
+        registration_routes,
+        "get_settings",
+        lambda: SimpleNamespace(
+            proxy_assignment_strategy="no_proxy",
+            proxy_url=None,
+            proxy_dynamic_enabled=False,
+            proxy_dynamic_api_url="",
+            proxy_dynamic_api_key=None,
+            proxy_dynamic_api_key_header="X-API-Key",
+            proxy_dynamic_result_field="",
+        ),
+    )
+
+    registration_routes._run_sync_registration_task(
+        task_uuid="task-cleanup-success",
+        email_service_type="tempmail",
+        proxy=None,
+        email_service_config=None,
+    )
+
+    assert cleanup_calls == []
+
+
+def test_run_sync_registration_task_skips_cleanup_when_service_disabled(monkeypatch):
+    cleanup_calls = []
+
+    class DummyTask:
+        pass
+
+    class FakeEmailService:
+        def should_cleanup_on_task_failure(self):
+            return False
+
+        def cleanup_failed_task_resources(self, email_info=None, mailbox_email=None):
+            cleanup_calls.append((email_info, mailbox_email))
+            return {"skipped": False}
+
+    class FakeEngine:
+        def __init__(self, email_service, proxy_url, callback_logger, task_uuid):
+            self.email_info = {"email": "cleanup@example.com", "address_id": "addr-1"}
+            self.inbox_email = "cleanup@example.com"
+
+        def run(self):
+            return RegistrationResult(success=False, error_message="proxy connect error")
+
+        def save_to_database(self, result, account_label=None, role_tag=None):
+            return True
+
+    @contextmanager
+    def fake_get_db():
+        yield object()
+
+    monkeypatch.setattr(registration_routes, "get_db", fake_get_db)
+    monkeypatch.setattr(registration_routes, "RegistrationEngine", FakeEngine)
+    monkeypatch.setattr(registration_routes, "_build_email_service_for_task", lambda *args, **kwargs: FakeEmailService())
+    monkeypatch.setattr(registration_routes.task_manager, "is_cancelled", lambda task_uuid: False)
+    monkeypatch.setattr(registration_routes.task_manager, "update_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        registration_routes.task_manager,
+        "create_log_callback",
+        lambda *args, **kwargs: (lambda message: None),
+    )
+    monkeypatch.setattr(registration_routes.crud, "update_registration_task", lambda db, task_uuid, **kwargs: DummyTask())
+    monkeypatch.setattr(registration_routes.crud, "increment_proxy_success", lambda db, proxy_id: True)
+    monkeypatch.setattr(registration_routes.crud, "increment_proxy_failure", lambda db, proxy_id: True)
+    monkeypatch.setattr(registration_routes.crud, "get_enabled_proxies", lambda db: [])
+    monkeypatch.setattr(
+        registration_routes,
+        "get_settings",
+        lambda: SimpleNamespace(
+            proxy_assignment_strategy="no_proxy",
+            proxy_url=None,
+            proxy_dynamic_enabled=False,
+            proxy_dynamic_api_url="",
+            proxy_dynamic_api_key=None,
+            proxy_dynamic_api_key_header="X-API-Key",
+            proxy_dynamic_result_field="",
+        ),
+    )
+
+    registration_routes._run_sync_registration_task(
+        task_uuid="task-cleanup-disabled",
+        email_service_type="tempmail",
+        proxy=None,
+        email_service_config=None,
+    )
+
+    assert cleanup_calls == []
+
+
 def test_registration_no_proxy_strategy_allows_direct(monkeypatch):
     db = _make_db()
     try:

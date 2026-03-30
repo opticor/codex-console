@@ -289,3 +289,230 @@ def test_get_verification_code_admin_unfiltered_fallback():
     code = service.get_verification_code(email="target@example.com", timeout=1)
 
     assert code == "135790"
+
+
+def test_cleanup_failed_task_resources_deletes_address_when_enabled():
+    service = TempMailService({
+        "base_url": "https://mail.example.com",
+        "admin_password": "admin-secret",
+        "domain": "example.com",
+        "cleanup_on_task_failure": True,
+    })
+    fake_client = FakeHTTPClient([
+        FakeResponse(payload={}),
+    ])
+    service.http_client = fake_client
+    service._email_cache["cleanup@example.com"] = {
+        "email": "cleanup@example.com",
+        "address_id": "addr-1",
+        "service_id": "cleanup@example.com",
+    }
+    service._last_used_mail_ids["cleanup@example.com"] = "mail-1"
+    service._task_mail_ids_by_email["cleanup@example.com"] = {"mail-1", "mail-2"}
+
+    result = service.cleanup_failed_task_resources(
+        email_info={"email": "cleanup@example.com", "address_id": "addr-1"},
+        mailbox_email="cleanup@example.com",
+    )
+
+    assert result["address_deleted"] is True
+    assert result["lookup_attempted"] is False
+    assert result["lookup_matched"] is False
+    assert fake_client.calls[0]["method"] == "DELETE"
+    assert fake_client.calls[0]["url"].endswith("/admin/delete_address/addr-1")
+    assert "cleanup@example.com" not in service._email_cache
+    assert "cleanup@example.com" not in service._last_used_mail_ids
+    assert "cleanup@example.com" not in service._task_mail_ids_by_email
+
+
+def test_cleanup_failed_task_resources_looks_up_address_id_then_deletes_address():
+    service = TempMailService({
+        "base_url": "https://mail.example.com",
+        "admin_password": "admin-secret",
+        "domain": "example.com",
+        "cleanup_on_task_failure": True,
+    })
+    fake_client = FakeHTTPClient([
+        FakeResponse(payload={"results": [{"id": 506, "name": "cleanup@example.com"}]}),
+        FakeResponse(payload={}),
+    ])
+    service.http_client = fake_client
+    service._email_cache["cleanup@example.com"] = {
+        "email": "cleanup@example.com",
+        "service_id": "cleanup@example.com",
+    }
+    service._task_mail_ids_by_email["cleanup@example.com"] = {"mail-1", "mail-2"}
+
+    result = service.cleanup_failed_task_resources(
+        email_info={"email": "cleanup@example.com"},
+        mailbox_email="cleanup@example.com",
+    )
+
+    assert result["address_deleted"] is True
+    assert result["address_id"] == "506"
+    assert result["lookup_attempted"] is True
+    assert result["lookup_matched"] is True
+    assert [call["url"] for call in fake_client.calls] == [
+        "https://mail.example.com/admin/address",
+        "https://mail.example.com/admin/delete_address/506",
+    ]
+    assert fake_client.calls[0]["kwargs"]["params"] == {
+        "limit": 1,
+        "offset": 0,
+        "query": "cleanup@example.com",
+    }
+    assert "cleanup@example.com" not in service._email_cache
+
+
+def test_cleanup_failed_task_resources_does_not_treat_email_info_id_as_address_id():
+    service = TempMailService({
+        "base_url": "https://mail.example.com",
+        "admin_password": "admin-secret",
+        "domain": "example.com",
+        "cleanup_on_task_failure": True,
+    })
+    fake_client = FakeHTTPClient([
+        FakeResponse(payload={"results": [{"id": 506, "name": "cleanup@example.com"}]}),
+        FakeResponse(payload={}),
+    ])
+    service.http_client = fake_client
+
+    result = service.cleanup_failed_task_resources(
+        email_info={"email": "cleanup@example.com", "id": "cleanup@example.com"},
+        mailbox_email="cleanup@example.com",
+    )
+
+    assert result["address_deleted"] is True
+    assert result["address_id"] == "506"
+    assert fake_client.calls[0]["url"] == "https://mail.example.com/admin/address"
+    assert fake_client.calls[1]["url"] == "https://mail.example.com/admin/delete_address/506"
+
+
+def test_cleanup_failed_task_resources_swallows_delete_errors_and_clears_local_state():
+    service = TempMailService({
+        "base_url": "https://mail.example.com",
+        "admin_password": "admin-secret",
+        "domain": "example.com",
+        "cleanup_on_task_failure": True,
+    })
+    fake_client = FakeHTTPClient([
+        FakeResponse(status_code=500, payload={"error": "boom"}),
+    ])
+    service.http_client = fake_client
+    service._email_cache["cleanup@example.com"] = {
+        "email": "cleanup@example.com",
+        "service_id": "cleanup@example.com",
+    }
+    service._task_mail_ids_by_email["cleanup@example.com"] = {"mail-1"}
+    service._last_used_mail_ids["cleanup@example.com"] = "mail-1"
+
+    result = service.cleanup_failed_task_resources(
+        email_info={"email": "cleanup@example.com"},
+        mailbox_email="cleanup@example.com",
+    )
+
+    assert result["address_deleted"] is False
+    assert result["address_id"] == ""
+    assert result["lookup_attempted"] is True
+    assert result["lookup_matched"] is False
+    assert "cleanup@example.com" not in service._email_cache
+    assert "cleanup@example.com" not in service._last_used_mail_ids
+    assert "cleanup@example.com" not in service._task_mail_ids_by_email
+
+
+def test_cleanup_failed_task_resources_uses_exact_email_match_from_address_lookup():
+    service = TempMailService({
+        "base_url": "https://mail.example.com",
+        "admin_password": "admin-secret",
+        "domain": "example.com",
+        "cleanup_on_task_failure": True,
+    })
+    fake_client = FakeHTTPClient([
+        FakeResponse(payload={
+            "results": [
+                {"id": 100, "name": "other@example.com"},
+                {"id": 506, "name": "cleanup@example.com"},
+            ]
+        }),
+        FakeResponse(payload={}),
+    ])
+    service.http_client = fake_client
+
+    result = service.cleanup_failed_task_resources(
+        email_info={"email": "cleanup@example.com"},
+        mailbox_email="cleanup@example.com",
+    )
+
+    assert result["address_deleted"] is True
+    assert result["address_id"] == "506"
+    assert fake_client.calls[1]["url"].endswith("/admin/delete_address/506")
+
+
+def test_cleanup_failed_task_resources_does_not_delete_when_address_lookup_misses():
+    service = TempMailService({
+        "base_url": "https://mail.example.com",
+        "admin_password": "admin-secret",
+        "domain": "example.com",
+        "cleanup_on_task_failure": True,
+    })
+    fake_client = FakeHTTPClient([
+        FakeResponse(payload={"results": []}),
+    ])
+    service.http_client = fake_client
+
+    result = service.cleanup_failed_task_resources(
+        email_info={"email": "cleanup@example.com"},
+        mailbox_email="cleanup@example.com",
+    )
+
+    assert result["address_deleted"] is False
+    assert result["address_id"] == ""
+    assert result["lookup_attempted"] is True
+    assert result["lookup_matched"] is False
+    assert len(fake_client.calls) == 1
+    assert fake_client.calls[0]["url"] == "https://mail.example.com/admin/address"
+
+
+def test_cleanup_failed_task_resources_swallows_delete_address_errors_after_lookup():
+    service = TempMailService({
+        "base_url": "https://mail.example.com",
+        "admin_password": "admin-secret",
+        "domain": "example.com",
+        "cleanup_on_task_failure": True,
+    })
+    fake_client = FakeHTTPClient([
+        FakeResponse(payload={"results": [{"id": 506, "name": "cleanup@example.com"}]}),
+        FakeResponse(status_code=500, payload={"error": "boom"}),
+    ])
+    service.http_client = fake_client
+    service._email_cache["cleanup@example.com"] = {"email": "cleanup@example.com"}
+
+    result = service.cleanup_failed_task_resources(
+        email_info={"email": "cleanup@example.com"},
+        mailbox_email="cleanup@example.com",
+    )
+
+    assert result["address_deleted"] is False
+    assert result["address_id"] == "506"
+    assert result["lookup_attempted"] is True
+    assert result["lookup_matched"] is True
+    assert "cleanup@example.com" not in service._email_cache
+
+
+def test_cleanup_failed_task_resources_is_noop_when_disabled():
+    service = TempMailService({
+        "base_url": "https://mail.example.com",
+        "admin_password": "admin-secret",
+        "domain": "example.com",
+        "cleanup_on_task_failure": False,
+    })
+    fake_client = FakeHTTPClient([])
+    service.http_client = fake_client
+
+    result = service.cleanup_failed_task_resources(
+        email_info={"email": "cleanup@example.com", "address_id": "addr-1"},
+        mailbox_email="cleanup@example.com",
+    )
+
+    assert result["skipped"] is True
+    assert fake_client.calls == []

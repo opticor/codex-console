@@ -46,6 +46,22 @@ def test_email_service_types_include_yyds_mail():
     assert "default_domain" in field_names
 
 
+def test_email_service_types_include_temp_mail_cleanup_config():
+    result = asyncio.run(email_routes.get_service_types())
+    temp_mail_type = next(item for item in result["types"] if item["value"] == "temp_mail")
+    moe_mail_type = next(item for item in result["types"] if item["value"] == "moe_mail")
+    cloudmail_type = next(item for item in result["types"] if item["value"] == "cloudmail")
+    cleanup_field = next(
+        field for field in temp_mail_type["config_fields"] if field["name"] == "cleanup_on_task_failure"
+    )
+
+    assert cleanup_field["label"] == "任务失败时清理邮件和邮箱"
+    assert cleanup_field["required"] is False
+    assert cleanup_field["default"] is False
+    assert all(field["name"] != "cleanup_on_task_failure" for field in moe_mail_type["config_fields"])
+    assert all(field["name"] != "cleanup_on_task_failure" for field in cloudmail_type["config_fields"])
+
+
 def test_filter_sensitive_config_marks_yyds_api_key():
     filtered = email_routes.filter_sensitive_config({
         "base_url": "https://maliapi.215.im/v1",

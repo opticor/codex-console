@@ -283,6 +283,7 @@ async def get_service_types():
                     {"name": "custom_auth", "label": "Custom Auth（可选）", "required": False, "secret": True},
                     {"name": "domain", "label": "邮箱域名", "required": True, "placeholder": "example.com"},
                     {"name": "enable_prefix", "label": "启用前缀", "required": False, "default": True},
+                    {"name": "cleanup_on_task_failure", "label": "任务失败时清理邮件和邮箱", "required": False, "default": False},
                 ]
             },
             {
