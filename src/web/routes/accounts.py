@@ -388,6 +388,10 @@ class AccountResponse(BaseModel):
     proxy_used: Optional[str] = None
     cpa_uploaded: bool = False
     cpa_uploaded_at: Optional[str] = None
+    sub2api_uploaded: bool = False
+    sub2api_uploaded_at: Optional[str] = None
+    tm_uploaded: bool = False
+    tm_uploaded_at: Optional[str] = None
     account_label: str = AccountLabel.NONE.value
     role_tag: str = RoleTag.NONE.value
     biz_tag: Optional[str] = None
@@ -497,6 +501,10 @@ class BatchDeleteRequest(BaseModel):
     select_all: bool = False
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
+    upload_targets_filter: Optional[List[str]] = None
+    uploaded_filter: Optional[bool] = None
+    cpa_uploaded_filter: Optional[bool] = None
+    sub2api_uploaded_filter: Optional[bool] = None
     search_filter: Optional[str] = None
 
 
@@ -513,6 +521,10 @@ class OverviewRefreshRequest(BaseModel):
     select_all: bool = False
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
+    upload_targets_filter: Optional[List[str]] = None
+    uploaded_filter: Optional[bool] = None
+    cpa_uploaded_filter: Optional[bool] = None
+    sub2api_uploaded_filter: Optional[bool] = None
     search_filter: Optional[str] = None
     proxy: Optional[str] = None
 
@@ -523,10 +535,72 @@ class OverviewCardDeleteRequest(BaseModel):
     select_all: bool = False
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
+    upload_targets_filter: Optional[List[str]] = None
+    uploaded_filter: Optional[bool] = None
+    cpa_uploaded_filter: Optional[bool] = None
+    sub2api_uploaded_filter: Optional[bool] = None
     search_filter: Optional[str] = None
 
 
 # ============== Helper Functions ==============
+
+def _normalize_upload_targets(values: Optional[List[str]]) -> List[str]:
+    if not values:
+        return []
+
+    normalized: List[str] = []
+    seen = set()
+    alias_map = {
+        "cpa": "cpa",
+        "s2a": "s2a",
+        "sub2api": "s2a",
+        "tm": "tm",
+    }
+    for raw in values:
+        key = alias_map.get(str(raw or "").strip().lower())
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        normalized.append(key)
+    return normalized
+
+
+def _apply_any_uploaded_filter(query):
+    return query.filter(
+        or_(
+            Account.cpa_uploaded.is_(True),
+            Account.sub2api_uploaded.is_(True),
+            Account.tm_uploaded.is_(True),
+        )
+    )
+
+
+def _apply_upload_targets_filter(query, upload_targets: Optional[List[str]]):
+    normalized_targets = _normalize_upload_targets(upload_targets)
+    if not normalized_targets:
+        return query
+
+    for target in normalized_targets:
+        if target == "cpa":
+            query = query.filter(Account.cpa_uploaded.is_(True))
+        elif target == "s2a":
+            query = query.filter(Account.sub2api_uploaded.is_(True))
+        elif target == "tm":
+            query = query.filter(Account.tm_uploaded.is_(True))
+    return query
+
+
+def _apply_legacy_upload_filters(
+    query,
+    cpa_uploaded_filter: Optional[bool] = None,
+    sub2api_uploaded_filter: Optional[bool] = None,
+):
+    if cpa_uploaded_filter is not None:
+        query = query.filter(Account.cpa_uploaded == bool(cpa_uploaded_filter))
+    if sub2api_uploaded_filter is not None:
+        query = query.filter(Account.sub2api_uploaded == bool(sub2api_uploaded_filter))
+    return query
+
 
 def resolve_account_ids(
     db,
@@ -534,6 +608,10 @@ def resolve_account_ids(
     select_all: bool = False,
     status_filter: Optional[str] = None,
     email_service_filter: Optional[str] = None,
+    upload_targets_filter: Optional[List[str]] = None,
+    uploaded_filter: Optional[bool] = None,
+    cpa_uploaded_filter: Optional[bool] = None,
+    sub2api_uploaded_filter: Optional[bool] = None,
     search_filter: Optional[str] = None,
 ) -> List[int]:
     """当 select_all=True 时查询全部符合条件的 ID，否则直接返回传入的 ids"""
@@ -544,6 +622,13 @@ def resolve_account_ids(
         query = _apply_status_filter(query, status_filter)
     if email_service_filter:
         query = query.filter(Account.email_service == email_service_filter)
+    if _normalize_upload_targets(upload_targets_filter):
+        query = _apply_upload_targets_filter(query, upload_targets_filter)
+    elif uploaded_filter is not None:
+        if uploaded_filter:
+            query = _apply_any_uploaded_filter(query)
+    else:
+        query = _apply_legacy_upload_filters(query, cpa_uploaded_filter, sub2api_uploaded_filter)
     if search_filter:
         pattern = f"%{search_filter}%"
         query = query.filter(
@@ -590,6 +675,10 @@ def account_to_response(account: Account) -> AccountResponse:
         proxy_used=account.proxy_used,
         cpa_uploaded=account.cpa_uploaded or False,
         cpa_uploaded_at=account.cpa_uploaded_at.isoformat() if account.cpa_uploaded_at else None,
+        sub2api_uploaded=account.sub2api_uploaded or False,
+        sub2api_uploaded_at=account.sub2api_uploaded_at.isoformat() if account.sub2api_uploaded_at else None,
+        tm_uploaded=account.tm_uploaded or False,
+        tm_uploaded_at=account.tm_uploaded_at.isoformat() if account.tm_uploaded_at else None,
         account_label=normalize_account_label(getattr(account, "account_label", None)),
         role_tag=_resolve_account_role_tag(account),
         biz_tag=(str(getattr(account, "biz_tag", "") or "").strip() or None),
@@ -1268,6 +1357,10 @@ async def list_accounts(
     status: Optional[str] = Query(None, description="状态筛选"),
     email_service: Optional[str] = Query(None, description="邮箱服务筛选"),
     role_tag: Optional[str] = Query(None, description="角色标签筛选：parent/child/none"),
+    upload_targets: Optional[List[str]] = Query(None, description="上传平台筛选：cpa/s2a/tm，可重复传参"),
+    uploaded: Optional[bool] = Query(None, description="统一上传标记筛选，仅支持 true"),
+    cpa_uploaded: Optional[bool] = Query(None, description="CPA 上传标记筛选"),
+    sub2api_uploaded: Optional[bool] = Query(None, description="Sub2API 上传标记筛选"),
     pool_state: Optional[str] = Query(None, description="池状态筛选：team_pool/candidate_pool/blocked"),
     biz_tag: Optional[str] = Query(None, description="业务标签筛选"),
     search: Optional[str] = Query(None, description="搜索关键词"),
@@ -1302,6 +1395,14 @@ async def list_accounts(
                     ),
                 )
             )
+
+        if _normalize_upload_targets(upload_targets):
+            query = _apply_upload_targets_filter(query, upload_targets)
+        elif uploaded is not None:
+            if uploaded:
+                query = _apply_any_uploaded_filter(query)
+        else:
+            query = _apply_legacy_upload_filters(query, cpa_uploaded, sub2api_uploaded)
 
         # 池状态筛选
         if pool_state:
@@ -1532,6 +1633,10 @@ async def remove_accounts_overview_cards(request: OverviewCardDeleteRequest):
             request.select_all,
             request.status_filter,
             request.email_service_filter,
+            request.upload_targets_filter,
+            request.uploaded_filter,
+            request.cpa_uploaded_filter,
+            request.sub2api_uploaded_filter,
             request.search_filter,
         )
         removed_count = 0
@@ -1607,6 +1712,10 @@ def refresh_accounts_overview(request: OverviewRefreshRequest):
             request.select_all,
             request.status_filter,
             request.email_service_filter,
+            request.upload_targets_filter,
+            request.uploaded_filter,
+            request.cpa_uploaded_filter,
+            request.sub2api_uploaded_filter,
             request.search_filter,
         )
         if not ids:
@@ -1878,7 +1987,11 @@ async def batch_delete_accounts(request: BatchDeleteRequest, http_request: Reque
         actor = _resolve_actor(http_request)
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter,
+            request.upload_targets_filter,
+            request.uploaded_filter,
+            request.cpa_uploaded_filter, request.sub2api_uploaded_filter,
+            request.search_filter
         )
         deleted_count = 0
         errors = []
@@ -1967,6 +2080,10 @@ class BatchExportRequest(BaseModel):
     select_all: bool = False
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
+    upload_targets_filter: Optional[List[str]] = None
+    uploaded_filter: Optional[bool] = None
+    cpa_uploaded_filter: Optional[bool] = None
+    sub2api_uploaded_filter: Optional[bool] = None
     search_filter: Optional[str] = None
 
 
@@ -1976,7 +2093,11 @@ async def export_accounts_json(request: BatchExportRequest):
     with get_db() as db:
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter,
+            request.upload_targets_filter,
+            request.uploaded_filter,
+            request.cpa_uploaded_filter, request.sub2api_uploaded_filter,
+            request.search_filter
         )
         accounts = db.query(Account).filter(Account.id.in_(ids)).all()
 
@@ -2027,7 +2148,11 @@ async def export_accounts_csv(request: BatchExportRequest):
     with get_db() as db:
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter,
+            request.upload_targets_filter,
+            request.uploaded_filter,
+            request.cpa_uploaded_filter, request.sub2api_uploaded_filter,
+            request.search_filter
         )
         accounts = db.query(Account).filter(Account.id.in_(ids)).all()
 
@@ -2121,7 +2246,11 @@ async def export_accounts_sub2api(request: BatchExportRequest):
     with get_db() as db:
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter,
+            request.upload_targets_filter,
+            request.uploaded_filter,
+            request.cpa_uploaded_filter, request.sub2api_uploaded_filter,
+            request.search_filter
         )
         accounts = db.query(Account).filter(Account.id.in_(ids)).all()
 
@@ -2150,7 +2279,11 @@ async def export_accounts_codex(request: BatchExportRequest):
     with get_db() as db:
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter,
+            request.upload_targets_filter,
+            request.uploaded_filter,
+            request.cpa_uploaded_filter, request.sub2api_uploaded_filter,
+            request.search_filter
         )
         accounts = db.query(Account).filter(Account.id.in_(ids)).all()
 
@@ -2186,7 +2319,11 @@ async def export_accounts_cpa(request: BatchExportRequest):
     with get_db() as db:
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter,
+            request.upload_targets_filter,
+            request.uploaded_filter,
+            request.cpa_uploaded_filter, request.sub2api_uploaded_filter,
+            request.search_filter
         )
         accounts = db.query(Account).filter(Account.id.in_(ids)).all()
 
@@ -2363,6 +2500,10 @@ class BatchRefreshRequest(BaseModel):
     select_all: bool = False
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
+    upload_targets_filter: Optional[List[str]] = None
+    uploaded_filter: Optional[bool] = None
+    cpa_uploaded_filter: Optional[bool] = None
+    sub2api_uploaded_filter: Optional[bool] = None
     search_filter: Optional[str] = None
 
 
@@ -2378,6 +2519,10 @@ class BatchValidateRequest(BaseModel):
     select_all: bool = False
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
+    upload_targets_filter: Optional[List[str]] = None
+    uploaded_filter: Optional[bool] = None
+    cpa_uploaded_filter: Optional[bool] = None
+    sub2api_uploaded_filter: Optional[bool] = None
     search_filter: Optional[str] = None
 
 
@@ -3385,7 +3530,11 @@ def start_batch_refresh_async(request: BatchRefreshRequest):
     with get_db() as db:
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter,
+            request.upload_targets_filter,
+            request.uploaded_filter,
+            request.cpa_uploaded_filter, request.sub2api_uploaded_filter,
+            request.search_filter
         )
 
     task_payload = {
@@ -3394,6 +3543,8 @@ def start_batch_refresh_async(request: BatchRefreshRequest):
         "select_all": bool(request.select_all),
         "status_filter": request.status_filter,
         "email_service_filter": request.email_service_filter,
+        "upload_targets_filter": request.upload_targets_filter,
+        "uploaded_filter": request.uploaded_filter,
         "search_filter": request.search_filter,
     }
     task_id = _create_account_async_task("batch_refresh", total=len(ids), payload=task_payload)
@@ -3426,7 +3577,11 @@ def start_batch_validate_async(request: BatchValidateRequest):
     with get_db() as db:
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter,
+            request.upload_targets_filter,
+            request.uploaded_filter,
+            request.cpa_uploaded_filter, request.sub2api_uploaded_filter,
+            request.search_filter
         )
 
     task_payload = {
@@ -3435,6 +3590,8 @@ def start_batch_validate_async(request: BatchValidateRequest):
         "select_all": bool(request.select_all),
         "status_filter": request.status_filter,
         "email_service_filter": request.email_service_filter,
+        "upload_targets_filter": request.upload_targets_filter,
+        "uploaded_filter": request.uploaded_filter,
         "search_filter": request.search_filter,
     }
     task_id = _create_account_async_task("batch_validate", total=len(ids), payload=task_payload)
@@ -3471,6 +3628,10 @@ def start_overview_refresh_async(request: OverviewRefreshRequest):
             request.select_all,
             request.status_filter,
             request.email_service_filter,
+            request.upload_targets_filter,
+            request.uploaded_filter,
+            request.cpa_uploaded_filter,
+            request.sub2api_uploaded_filter,
             request.search_filter,
         )
         if not ids:
@@ -3486,6 +3647,10 @@ def start_overview_refresh_async(request: OverviewRefreshRequest):
         "select_all": bool(request.select_all),
         "status_filter": request.status_filter,
         "email_service_filter": request.email_service_filter,
+        "upload_targets_filter": request.upload_targets_filter,
+        "uploaded_filter": request.uploaded_filter,
+        "cpa_uploaded_filter": request.cpa_uploaded_filter,
+        "sub2api_uploaded_filter": request.sub2api_uploaded_filter,
         "search_filter": request.search_filter,
     }
     task_id = _create_account_async_task("overview_refresh", total=len(ids), payload=task_payload)
@@ -3527,7 +3692,11 @@ def batch_refresh_tokens(request: BatchRefreshRequest):
     with get_db() as db:
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter,
+            request.upload_targets_filter,
+            request.uploaded_filter,
+            request.cpa_uploaded_filter, request.sub2api_uploaded_filter,
+            request.search_filter
         )
 
     if not ids:
@@ -3593,7 +3762,11 @@ def batch_validate_tokens(request: BatchValidateRequest):
     with get_db() as db:
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter,
+            request.upload_targets_filter,
+            request.uploaded_filter,
+            request.cpa_uploaded_filter, request.sub2api_uploaded_filter,
+            request.search_filter
         )
 
     if not ids:
@@ -3667,6 +3840,10 @@ class BatchCPAUploadRequest(BaseModel):
     select_all: bool = False
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
+    upload_targets_filter: Optional[List[str]] = None
+    uploaded_filter: Optional[bool] = None
+    cpa_uploaded_filter: Optional[bool] = None
+    sub2api_uploaded_filter: Optional[bool] = None
     search_filter: Optional[str] = None
     cpa_service_id: Optional[int] = None  # 指定 CPA 服务 ID，不传则使用全局配置
 
@@ -3693,7 +3870,11 @@ async def batch_upload_accounts_to_cpa(request: BatchCPAUploadRequest):
     with get_db() as db:
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter,
+            request.upload_targets_filter,
+            request.uploaded_filter,
+            request.cpa_uploaded_filter, request.sub2api_uploaded_filter,
+            request.search_filter
         )
 
     results = batch_upload_to_cpa(ids, proxy, api_url=cpa_api_url, api_token=cpa_api_token)
@@ -3759,6 +3940,10 @@ class BatchSub2ApiUploadRequest(BaseModel):
     select_all: bool = False
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
+    upload_targets_filter: Optional[List[str]] = None
+    uploaded_filter: Optional[bool] = None
+    cpa_uploaded_filter: Optional[bool] = None
+    sub2api_uploaded_filter: Optional[bool] = None
     search_filter: Optional[str] = None
     service_id: Optional[int] = None  # 指定 Sub2API 服务 ID，不传则使用第一个启用的
     concurrency: int = 3
@@ -3795,7 +3980,11 @@ async def batch_upload_accounts_to_sub2api(request: BatchSub2ApiUploadRequest):
     with get_db() as db:
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter,
+            request.upload_targets_filter,
+            request.uploaded_filter,
+            request.cpa_uploaded_filter, request.sub2api_uploaded_filter,
+            request.search_filter
         )
 
     results = batch_upload_to_sub2api(
@@ -3850,6 +4039,9 @@ async def upload_account_to_sub2api(account_id: int, request: Optional[Sub2ApiUp
             target_type=target_type
         )
         if success:
+            account.sub2api_uploaded = True
+            account.sub2api_uploaded_at = datetime.utcnow()
+            db.commit()
             return {"success": True, "message": message}
         else:
             return {"success": False, "error": message}
@@ -3866,6 +4058,10 @@ class BatchUploadTMRequest(BaseModel):
     select_all: bool = False
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
+    upload_targets_filter: Optional[List[str]] = None
+    uploaded_filter: Optional[bool] = None
+    cpa_uploaded_filter: Optional[bool] = None
+    sub2api_uploaded_filter: Optional[bool] = None
     search_filter: Optional[str] = None
     service_id: Optional[int] = None
 
@@ -3889,7 +4085,11 @@ async def batch_upload_accounts_to_tm(request: BatchUploadTMRequest):
 
         ids = resolve_account_ids(
             db, request.ids, request.select_all,
-            request.status_filter, request.email_service_filter, request.search_filter
+            request.status_filter, request.email_service_filter,
+            request.upload_targets_filter,
+            request.uploaded_filter,
+            request.cpa_uploaded_filter, request.sub2api_uploaded_filter,
+            request.search_filter
         )
 
     results = batch_upload_to_team_manager(ids, api_url, api_key)
@@ -3919,6 +4119,10 @@ async def upload_account_to_tm(account_id: int, request: Optional[UploadTMReques
         if not account:
             raise HTTPException(status_code=404, detail="账号不存在")
         success, message = upload_to_team_manager(account, api_url, api_key)
+        if success:
+            account.tm_uploaded = True
+            account.tm_uploaded_at = datetime.utcnow()
+            db.commit()
 
     return {"success": success, "message": message}
 

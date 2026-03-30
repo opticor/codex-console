@@ -16,7 +16,7 @@ let isOverviewRefreshing = false;
 let isQuickWorkflowRunning = false;
 let quickWorkflowStepLabel = '';
 let selectAllPages = false;  // 是否选中了全部页
-let currentFilters = { status: '', email_service: '', role_tag: '', search: '' };  // 当前筛选条件
+let currentFilters = { status: '', email_service: '', role_tag: '', upload_targets: [], search: '' };  // 当前筛选条件
 let autoQuickRefreshSettings = null;
 let autoQuickRefreshFormDirty = false;
 let isTaskPausing = false;
@@ -234,6 +234,7 @@ const elements = {
     filterStatus: document.getElementById('filter-status'),
     filterService: document.getElementById('filter-service'),
     filterRoleTag: document.getElementById('filter-role-tag'),
+    uploadFilterButtons: Array.from(document.querySelectorAll('[data-upload-target]')),
     searchInput: document.getElementById('search-input'),
     quickRefreshBtn: document.getElementById('quick-refresh-btn'),
     autoQuickRefreshSettingsBtn: document.getElementById('auto-quick-refresh-settings-btn'),
@@ -296,6 +297,15 @@ function initEventListeners() {
         currentPage = 1;
         resetSelectAllPages();
         loadAccounts();
+    });
+
+    elements.uploadFilterButtons.forEach((button) => {
+        button.addEventListener('click', () => {
+            button.classList.toggle('active');
+            currentPage = 1;
+            resetSelectAllPages();
+            loadAccounts();
+        });
     });
 
     // 搜索（防抖）
@@ -634,7 +644,7 @@ async function loadAccounts() {
     // 显示加载状态
     elements.table.innerHTML = `
         <tr>
-            <td colspan="9">
+            <td colspan="10">
                 <div class="empty-state">
                     <div class="skeleton skeleton-text" style="width: 60%;"></div>
                     <div class="skeleton skeleton-text" style="width: 80%;"></div>
@@ -649,6 +659,7 @@ async function loadAccounts() {
         status: elements.filterStatus.value,
         email_service: elements.filterService.value,
         role_tag: elements.filterRoleTag?.value || '',
+        upload_targets: getSelectedUploadTargets(),
         search: elements.searchInput.value.trim(),
     });
 
@@ -658,6 +669,7 @@ async function loadAccounts() {
         status: currentFilters.status,
         email_service: currentFilters.email_service,
         role_tag: currentFilters.role_tag,
+        upload_targets: currentFilters.upload_targets,
         search: currentFilters.search,
     });
     const queryText = params.toString();
@@ -675,7 +687,7 @@ async function loadAccounts() {
         console.error('加载账号列表失败:', error);
         elements.table.innerHTML = `
             <tr>
-                <td colspan="9">
+                <td colspan="10">
                     <div class="empty-state">
                         <div class="empty-state-icon">❌</div>
                         <div class="empty-state-title">加载失败</div>
@@ -695,7 +707,7 @@ function renderAccounts(accounts) {
     if (accounts.length === 0) {
         elements.table.innerHTML = `
             <tr>
-                <td colspan="9">
+                <td colspan="10">
                     <div class="empty-state">
                         <div class="empty-state-icon">📭</div>
                         <div class="empty-state-title">暂无数据</div>
@@ -732,11 +744,7 @@ function renderAccounts(accounts) {
             <td>${getServiceTypeText(account.email_service)}</td>
             <td>${renderAccountStatusDot(account.status, account.id)}</td>
             <td>
-                <div class="cpa-status">
-                    ${account.cpa_uploaded
-                        ? `<span class="cpa-status-dot" title="已上传于 ${format.date(account.cpa_uploaded_at)}"></span>`
-                        : ``}
-                </div>
+                ${renderUploadTags(account)}
             </td>
             <td>
                 ${renderSubscriptionStatus(account.subscription_type)}
@@ -883,6 +891,7 @@ function buildBatchPayload(extraFields = {}) {
     const filterPayload = filterProtocol.toPayload({
         status_filter: currentFilters.status,
         email_service_filter: currentFilters.email_service,
+        upload_targets_filter: currentFilters.upload_targets,
         search_filter: currentFilters.search,
     });
     if (selectAllPages) {
@@ -899,6 +908,13 @@ function buildBatchPayload(extraFields = {}) {
 // 获取有效选中数量（select_all 时用总数）
 function getEffectiveCount() {
     return selectAllPages ? totalAccounts : selectedAccounts.size;
+}
+
+function getSelectedUploadTargets() {
+    return elements.uploadFilterButtons
+        .filter((button) => button.classList.contains('active'))
+        .map((button) => String(button.dataset.uploadTarget || '').trim())
+        .filter(Boolean);
 }
 
 // 渲染全选横幅
@@ -1204,6 +1220,7 @@ function buildQuickRefreshPayload() {
         ...filterProtocol.toPayload({
             status_filter: currentFilters.status,
             email_service_filter: currentFilters.email_service,
+            upload_targets_filter: currentFilters.upload_targets,
             search_filter: currentFilters.search,
         }),
     };
@@ -1867,6 +1884,39 @@ function renderAccountLabelBadge(value) {
     return `<span class="account-label-badge ${normalized}" title="${getAccountLabelText(normalized)}">${getAccountLabelText(normalized)}</span>`;
 }
 
+function renderUploadTags(account) {
+    const tags = [
+        {
+            active: Boolean(account.cpa_uploaded),
+            key: 'cpa',
+            label: 'CPA',
+            title: '已上传到 CPA',
+            uploadedAt: account.cpa_uploaded_at,
+        },
+        {
+            active: Boolean(account.sub2api_uploaded),
+            key: 's2a',
+            label: 'S2A',
+            title: '已上传到 Sub2API',
+            uploadedAt: account.sub2api_uploaded_at,
+        },
+        {
+            active: Boolean(account.tm_uploaded),
+            key: 'tm',
+            label: 'TM',
+            title: '已上传到 Team Manager',
+            uploadedAt: account.tm_uploaded_at,
+        },
+    ]
+        .filter((item) => item.active)
+        .map((item) => {
+            const title = item.uploadedAt ? `${item.title}，时间 ${format.date(item.uploadedAt)}` : item.title;
+            return `<span class="upload-tag ${item.key}" title="${escapeHtml(title)}">${item.label}</span>`;
+        });
+
+    return `<div class="upload-tags">${tags.join('')}</div>`;
+}
+
 // 统一上传入口：弹出目标选择
 async function uploadAccount(id) {
     const targets = [
@@ -2219,6 +2269,7 @@ async function uploadToTm(id) {
         const result = await api.post(`/accounts/${id}/upload-tm`, payload);
         if (result.success) {
             toast.success('上传成功');
+            loadAccounts();
         } else {
             toast.error('上传失败: ' + (result.message || '未知错误'));
         }

@@ -58,19 +58,67 @@
         .token-status .dot.healthy { background: var(--success-color); }
         .token-status .dot.warning { background: var(--warning-color); }
         .token-status .dot.expired { background: var(--danger-color); }
-        .cpa-status {
+        .upload-tags {
             display: flex;
             align-items: center;
-            justify-content: center;
-            min-height: 12px;
+            flex-wrap: wrap;
+            gap: 4px;
+            min-height: 24px;
         }
-        .cpa-status-dot {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            display: inline-block;
-            border: 1px solid rgba(0, 0, 0, 0.12);
-            background: #3b82f6;
+        .upload-tag {
+            display: inline-flex;
+            align-items: center;
+            padding: 2px 6px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: var(--surface-hover);
+            color: var(--text-secondary);
+            font-size: 0.72rem;
+            font-weight: 600;
+            line-height: 1.2;
+        }
+        .upload-tag.cpa {
+            background: rgba(59, 130, 246, 0.12);
+            border-color: rgba(59, 130, 246, 0.22);
+            color: #1d4ed8;
+        }
+        .upload-tag.s2a {
+            background: rgba(16, 185, 129, 0.12);
+            border-color: rgba(16, 185, 129, 0.22);
+            color: #047857;
+        }
+        .upload-tag.tm {
+            background: rgba(249, 115, 22, 0.12);
+            border-color: rgba(249, 115, 22, 0.22);
+            color: #c2410c;
+        }
+        .filter-toggle-group {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: var(--surface);
+        }
+        .filter-toggle-btn {
+            border: 0;
+            background: transparent;
+            color: var(--text-secondary);
+            border-radius: 999px;
+            padding: 6px 10px;
+            font-size: 0.82rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+        }
+        .filter-toggle-btn:hover {
+            background: var(--surface-hover);
+            color: var(--text-primary);
+        }
+        .filter-toggle-btn.active {
+            background: var(--primary-color, #2563eb);
+            color: #fff;
         }
         .account-status-cell {
             display: inline-flex;
@@ -330,6 +378,12 @@
                             <option value="none">普通</option>
                         </select>
 
+                        <div class="filter-toggle-group" id="filter-uploaded-group" aria-label="上传平台筛选">
+                            <button type="button" class="filter-toggle-btn" data-upload-target="cpa">CPA</button>
+                            <button type="button" class="filter-toggle-btn" data-upload-target="s2a">S2A</button>
+                            <button type="button" class="filter-toggle-btn" data-upload-target="tm">TM</button>
+                        </div>
+
                         <input type="text" id="search-input" class="form-input" placeholder="🔍 搜索邮箱..." style="min-width: 200px;">
                     </div>
 
@@ -394,7 +448,7 @@
                                     <th style="width: 100px;">密码</th>
                                     <th style="width: 120px;">邮箱服务</th>
                                     <th style="width: 80px;">状态</th>
-                                    <th style="width: 80px;">CPA</th>
+                                    <th style="width: 140px;">上传</th>
                                     <th style="width: 80px;">订阅</th>
                                     <th style="width: 140px;">最后刷新</th>
                                     <th style="width: 220px;">操作</th>
@@ -402,7 +456,7 @@
                             </thead>
                             <tbody id="accounts-table">
                                 <tr>
-                                    <td colspan="11">
+                                    <td colspan="10">
                                         <div class="empty-state">
                                             <div class="skeleton skeleton-text" style="width: 60%;"></div>
                                             <div class="skeleton skeleton-text" style="width: 80%;"></div>

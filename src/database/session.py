@@ -214,6 +214,10 @@ class DatabaseSessionManager:
             # (表名, 列名, 列类型)
             ("accounts", "cpa_uploaded", "BOOLEAN DEFAULT 0"),
             ("accounts", "cpa_uploaded_at", "DATETIME"),
+            ("accounts", "sub2api_uploaded", "BOOLEAN DEFAULT 0"),
+            ("accounts", "sub2api_uploaded_at", "DATETIME"),
+            ("accounts", "tm_uploaded", "BOOLEAN DEFAULT 0"),
+            ("accounts", "tm_uploaded_at", "DATETIME"),
             ("accounts", "source", "VARCHAR(20) DEFAULT 'register'"),
             ("accounts", "account_label", "VARCHAR(20) DEFAULT 'none'"),
             ("accounts", "role_tag", "VARCHAR(20) DEFAULT 'none'"),

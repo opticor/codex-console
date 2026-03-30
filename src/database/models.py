@@ -54,6 +54,10 @@ class Account(Base):
     extra_data = Column(JSONEncodedDict)  # 额外信息存储
     cpa_uploaded = Column(Boolean, default=False)  # 是否已上传到 CPA
     cpa_uploaded_at = Column(DateTime)  # 上传时间
+    sub2api_uploaded = Column(Boolean, default=False)  # 是否已上传到 Sub2API
+    sub2api_uploaded_at = Column(DateTime)  # 上传时间
+    tm_uploaded = Column(Boolean, default=False)  # 是否已上传到 Team Manager
+    tm_uploaded_at = Column(DateTime)  # 上传时间
     source = Column(String(20), default='register')  # 'register' 或 'login'，区分账号来源
     account_label = Column(String(20), default=AccountLabel.NONE.value)  # none / mother / child
     role_tag = Column(String(20), default=RoleTag.NONE.value, index=True)  # none / parent / child
@@ -88,6 +92,10 @@ class Account(Base):
             'proxy_used': self.proxy_used,
             'cpa_uploaded': self.cpa_uploaded,
             'cpa_uploaded_at': self.cpa_uploaded_at.isoformat() if self.cpa_uploaded_at else None,
+            'sub2api_uploaded': self.sub2api_uploaded,
+            'sub2api_uploaded_at': self.sub2api_uploaded_at.isoformat() if self.sub2api_uploaded_at else None,
+            'tm_uploaded': self.tm_uploaded,
+            'tm_uploaded_at': self.tm_uploaded_at.isoformat() if self.tm_uploaded_at else None,
             'source': self.source,
             'account_label': self.account_label,
             'role_tag': self.role_tag,

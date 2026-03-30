@@ -4,6 +4,7 @@ Team Manager 上传功能
 """
 
 import logging
+from datetime import datetime
 from typing import List, Tuple
 
 from curl_cffi import requests as cffi_requests
@@ -139,10 +140,13 @@ def batch_upload_to_team_manager(
             )
             if resp.status_code in (200, 201):
                 for account in valid_accounts:
+                    account.tm_uploaded = True
+                    account.tm_uploaded_at = datetime.utcnow()
                     results["success_count"] += 1
                     results["details"].append(
                         {"id": account.id, "email": account.email, "success": True, "message": "批量上传成功"}
                     )
+                db.commit()
             else:
                 error_msg = f"批量上传失败: HTTP {resp.status_code}"
                 try:

@@ -704,6 +704,10 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                                         continue
                                     log_callback(f"[Sub2API] 正在把账号发往服务站: {_svc.name}")
                                     _ok, _msg = upload_to_sub2api([saved_account], _svc.api_url, _svc.api_key)
+                                    if _ok:
+                                        saved_account.sub2api_uploaded = True
+                                        saved_account.sub2api_uploaded_at = datetime.utcnow()
+                                        db.commit()
                                     log_callback(f"[Sub2API] {'成功' if _ok else '失败'}({_svc.name}): {_msg}")
                                 except Exception as _e:
                                     log_callback(f"[Sub2API] 异常({_sid}): {_e}")
@@ -729,6 +733,10 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                                         continue
                                     log_callback(f"[TM] 正在把账号发往服务站: {_svc.name}")
                                     _ok, _msg = upload_to_team_manager(saved_account, _svc.api_url, _svc.api_key)
+                                    if _ok:
+                                        saved_account.tm_uploaded = True
+                                        saved_account.tm_uploaded_at = datetime.utcnow()
+                                        db.commit()
                                     log_callback(f"[TM] {'成功' if _ok else '失败'}({_svc.name}): {_msg}")
                                 except Exception as _e:
                                     log_callback(f"[TM] 异常({_sid}): {_e}")
