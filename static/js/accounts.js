@@ -250,6 +250,7 @@ const elements = {
     selectAll: document.getElementById('select-all'),
     prevPage: document.getElementById('prev-page'),
     nextPage: document.getElementById('next-page'),
+    paginationPages: document.getElementById('pagination-pages'),
     pageInfo: document.getElementById('page-info'),
     detailModal: document.getElementById('detail-modal'),
     modalBody: document.getElementById('modal-body'),
@@ -432,17 +433,21 @@ function initEventListeners() {
     // 分页
     elements.prevPage.addEventListener('click', () => {
         if (currentPage > 1 && !isLoading) {
-            currentPage--;
-            loadAccounts();
+            goToPage(currentPage - 1);
         }
     });
 
     elements.nextPage.addEventListener('click', () => {
-        const totalPages = Math.ceil(totalAccounts / pageSize);
+        const totalPages = getTotalPages();
         if (currentPage < totalPages && !isLoading) {
-            currentPage++;
-            loadAccounts();
+            goToPage(currentPage + 1);
         }
+    });
+
+    elements.paginationPages?.addEventListener('click', (event) => {
+        const button = event.target.closest('button[data-page]');
+        if (!button || isLoading) return;
+        goToPage(Number(button.dataset.page || 1));
     });
 
     // 导出
@@ -723,24 +728,17 @@ async function loadAccounts() {
         search: elements.searchInput.value.trim(),
     });
 
-    const params = filterProtocol.toQuery({
-        page: currentPage,
-        page_size: pageSize,
-        status: currentFilters.status,
-        email_service: currentFilters.email_service,
-        role_tag: currentFilters.role_tag,
-        upload_targets: currentFilters.upload_targets,
-        search: currentFilters.search,
-    });
-    const queryText = params.toString();
-
     try {
-        const data = await api.get(`/accounts${queryText ? `?${queryText}` : ''}`, {
-            requestKey: 'accounts:list',
-            cancelPrevious: true,
-            retry: 1,
-        });
+        let data = await fetchAccountsPage(currentPage);
         totalAccounts = data.total;
+
+        const totalPages = getTotalPages();
+        if (data.accounts.length === 0 && totalAccounts > 0 && currentPage > totalPages) {
+            currentPage = totalPages;
+            data = await fetchAccountsPage(currentPage);
+            totalAccounts = data.total;
+        }
+
         renderAccounts(data.accounts);
         updatePagination();
     } catch (error) {
@@ -760,6 +758,83 @@ async function loadAccounts() {
         isLoading = false;
         updateBatchButtons();
     }
+}
+
+function getTotalPages() {
+    return Math.max(1, Math.ceil(totalAccounts / pageSize));
+}
+
+function buildAccountsListQuery(page = currentPage) {
+    return filterProtocol.toQuery({
+        page,
+        page_size: pageSize,
+        status: currentFilters.status,
+        email_service: currentFilters.email_service,
+        role_tag: currentFilters.role_tag,
+        upload_targets: currentFilters.upload_targets,
+        search: currentFilters.search,
+    });
+}
+
+function buildAccountsListUrl(page = currentPage) {
+    const queryText = buildAccountsListQuery(page).toString();
+    return `/accounts${queryText ? `?${queryText}` : ''}`;
+}
+
+async function fetchAccountsPage(page = currentPage) {
+    return api.get(buildAccountsListUrl(page), {
+        requestKey: 'accounts:list',
+        cancelPrevious: true,
+        retry: 1,
+    });
+}
+
+function goToPage(page) {
+    const totalPages = getTotalPages();
+    const nextPage = Math.min(totalPages, Math.max(1, Number(page) || 1));
+    if (nextPage === currentPage || isLoading) return;
+    currentPage = nextPage;
+    loadAccounts();
+}
+
+function getPaginationItems(totalPages, page) {
+    const pageSet = new Set([1, totalPages]);
+    for (let cursor = page - 2; cursor <= page + 2; cursor += 1) {
+        if (cursor >= 1 && cursor <= totalPages) {
+            pageSet.add(cursor);
+        }
+    }
+
+    const pages = Array.from(pageSet).sort((left, right) => left - right);
+    const items = [];
+
+    pages.forEach((item, index) => {
+        if (index > 0 && item - pages[index - 1] > 1) {
+            items.push({ type: 'ellipsis', key: `${pages[index - 1]}-${item}` });
+        }
+        items.push({ type: 'page', value: item });
+    });
+
+    return items;
+}
+
+function renderPaginationNumbers(totalPages) {
+    if (!elements.paginationPages) return;
+
+    const items = getPaginationItems(totalPages, currentPage);
+    elements.paginationPages.innerHTML = items.map((item) => {
+        if (item.type === 'ellipsis') {
+            return '<span class="pagination-ellipsis" aria-hidden="true">...</span>';
+        }
+        const page = item.value;
+        const activeClass = page === currentPage ? ' active' : '';
+        const ariaCurrent = page === currentPage ? ' aria-current="page"' : '';
+        return `
+            <button type="button" class="pagination-page${activeClass}" data-page="${page}"${ariaCurrent}>
+                ${page}
+            </button>
+        `;
+    }).join('');
 }
 
 // 渲染账号列表
@@ -930,11 +1005,11 @@ function togglePassword(element, password) {
 
 // 更新分页
 function updatePagination() {
-    const totalPages = Math.max(1, Math.ceil(totalAccounts / pageSize));
+    const totalPages = getTotalPages();
 
     elements.prevPage.disabled = currentPage <= 1;
     elements.nextPage.disabled = currentPage >= totalPages;
-
+    renderPaginationNumbers(totalPages);
     elements.pageInfo.textContent = `第 ${currentPage} 页 / 共 ${totalPages} 页`;
 }
 
