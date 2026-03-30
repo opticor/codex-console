@@ -62,7 +62,7 @@
                 <div class="card" style="margin-top: var(--spacing-lg);">
                     <div class="card-header">
                         <h3>动态代理配置</h3>
-                        <span class="hint">通过 API 每次获取新代理 IP，优先级高于代理列表</span>
+                        <span class="hint">当代理列表没有可用代理时，才会回退到动态代理</span>
                     </div>
                     <div class="card-body">
                         <form id="dynamic-proxy-form">
@@ -91,6 +91,15 @@
                                 <label for="dynamic-proxy-result-field">JSON 字段路径 (可选)</label>
                                 <input type="text" id="dynamic-proxy-result-field" name="result_field" placeholder="例如: data.proxy 或留空使用响应原文">
                                 <small style="color: var(--text-muted);">若 API 返回 JSON，填写点号分隔的字段路径提取代理 URL；留空则将响应原文作为代理 URL</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="proxy-assignment-strategy">代理分配策略</label>
+                                <select id="proxy-assignment-strategy" name="assignment_strategy">
+                                    <option value="round_robin">轮询分配</option>
+                                    <option value="random">随机分配</option>
+                                    <option value="least_recently_used">最少最近使用</option>
+                                </select>
+                                <small style="color: var(--text-muted);">仅在注册任务未手填代理时生效，优先从启用代理列表里按该策略选择代理。</small>
                             </div>
                             <div class="form-actions">
                                 <button type="submit" class="btn btn-primary">💾 保存设置</button>

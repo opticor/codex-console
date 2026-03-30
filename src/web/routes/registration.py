@@ -6,8 +6,9 @@ import asyncio
 import logging
 import uuid
 import random
+from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple, Set
 
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from pydantic import BaseModel, Field
@@ -23,7 +24,7 @@ from ...database.session import get_db
 from ...database.models import RegistrationTask, Proxy
 from ...core.register import RegistrationEngine, RegistrationResult
 from ...services import EmailServiceFactory, EmailServiceType
-from ...config.settings import get_settings
+from ...config.settings import get_settings, normalize_proxy_assignment_strategy
 from ..task_manager import task_manager
 
 logger = logging.getLogger(__name__)
@@ -37,30 +38,138 @@ batch_tasks: Dict[str, dict] = {}
 
 # ============== Proxy Helper Functions ==============
 
-def get_proxy_for_registration(db) -> Tuple[Optional[str], Optional[int]]:
+@dataclass
+class ProxySelectionResult:
+    proxy_url: Optional[str]
+    proxy_id: Optional[int]
+    proxy_source: str
+    strategy: str
+
+
+_PROXY_RETRYABLE_MARKERS = (
+    "proxy",
+    "代理",
+    "timeout",
+    "timed out",
+    "连接超时",
+    "连接失败",
+    "failed to connect",
+    "connect error",
+    "connection error",
+    "connection reset",
+    "network error",
+    "network is unreachable",
+    "remote disconnected",
+    "tls",
+    "ssl",
+)
+_PROXY_NON_RETRYABLE_HINTS = (
+    "验证码",
+    "otp",
+    "workspace",
+    "密码",
+    "password",
+    "邮箱",
+    "email",
+    "sentinel",
+    "地理位置",
+    "已注册",
+    "account already",
+)
+
+
+def _mask_proxy_for_log(proxy_url: Optional[str]) -> str:
+    value = str(proxy_url or "").strip()
+    if not value:
+        return "-"
+    if "@" not in value:
+        return value
+    scheme, rest = value.split("://", 1) if "://" in value else ("", value)
+    auth, host = rest.split("@", 1)
+    auth_parts = auth.split(":", 1)
+    user = auth_parts[0] if auth_parts else ""
+    masked_auth = f"{user}:***" if user else "***"
+    return f"{scheme}://{masked_auth}@{host}" if scheme else f"{masked_auth}@{host}"
+
+
+def is_retryable_proxy_error(error_message: Optional[str]) -> bool:
+    text = str(error_message or "").strip().lower()
+    if not text:
+        return False
+    if any(marker in text for marker in _PROXY_NON_RETRYABLE_HINTS):
+        return False
+    return any(marker in text for marker in _PROXY_RETRYABLE_MARKERS)
+
+
+def get_proxy_for_registration(
+    db,
+    *,
+    exclude_proxy_ids: Optional[Set[int]] = None,
+    dynamic_attempt_count: int = 0,
+    allow_settings_fallback: bool = True,
+) -> ProxySelectionResult:
     """
-    获取用于注册的代理
+    为注册任务选择代理。
 
-    策略：
-    1. 优先从代理列表中随机选择一个启用的代理
-    2. 如果代理列表为空且启用了动态代理，调用动态代理 API 获取
-    3. 否则使用系统设置中的静态默认代理
-
-    Returns:
-        Tuple[proxy_url, proxy_id]: 代理 URL 和代理 ID（如果来自代理列表）
+    顺序：
+    1. 按配置策略从启用代理列表里选一个
+    2. 列表为空时尝试动态代理（最多两次获取）
+    3. 动态代理不可用时回退到全局静态代理
     """
-    # 先尝试从代理列表中获取
-    proxy = crud.get_random_proxy(db)
-    if proxy:
-        return proxy.proxy_url, proxy.id
+    settings = get_settings()
+    strategy = normalize_proxy_assignment_strategy(
+        getattr(settings, "proxy_assignment_strategy", "round_robin")
+    )
 
-    # 代理列表为空，尝试动态代理或静态代理
-    from ...core.dynamic_proxy import get_proxy_url_for_task
-    proxy_url = get_proxy_url_for_task()
-    if proxy_url:
-        return proxy_url, None
+    enabled_proxies = crud.get_enabled_proxies(db)
+    if enabled_proxies:
+        selected_proxy = crud.select_proxy_for_registration(
+            db,
+            strategy=strategy,
+            exclude_ids=exclude_proxy_ids or set(),
+        )
+        if selected_proxy:
+            return ProxySelectionResult(
+                proxy_url=selected_proxy.proxy_url,
+                proxy_id=selected_proxy.id,
+                proxy_source="proxy_list",
+                strategy=strategy,
+            )
+        return ProxySelectionResult(
+            proxy_url=None,
+            proxy_id=None,
+            proxy_source="proxy_list_exhausted",
+            strategy=strategy,
+        )
 
-    return None, None
+    if dynamic_attempt_count < 2:
+        from ...core.dynamic_proxy import get_dynamic_proxy_url
+
+        dynamic_proxy = get_dynamic_proxy_url()
+        if dynamic_proxy:
+            return ProxySelectionResult(
+                proxy_url=dynamic_proxy,
+                proxy_id=None,
+                proxy_source="dynamic",
+                strategy=strategy,
+            )
+
+    if allow_settings_fallback:
+        static_proxy = settings.proxy_url
+        if static_proxy:
+            return ProxySelectionResult(
+                proxy_url=static_proxy,
+                proxy_id=None,
+                proxy_source="settings",
+                strategy=strategy,
+            )
+
+    return ProxySelectionResult(
+        proxy_url=None,
+        proxy_id=None,
+        proxy_source="none",
+        strategy=strategy,
+    )
 
 
 def update_proxy_usage(db, proxy_id: Optional[int]):
@@ -230,6 +339,153 @@ def _normalize_email_service_config(
     return normalized
 
 
+def _build_email_service_for_task(
+    db,
+    task_uuid: str,
+    email_service_type: str,
+    email_service_config: Optional[dict],
+    email_service_id: Optional[int],
+    actual_proxy_url: Optional[str],
+):
+    """为当前任务构建邮箱服务实例，并在需要时关联数据库中的邮箱服务。"""
+    service_type = EmailServiceType(email_service_type)
+    settings = get_settings()
+
+    if email_service_id:
+        from ...database.models import EmailService as EmailServiceModel
+
+        db_service = db.query(EmailServiceModel).filter(
+            EmailServiceModel.id == email_service_id,
+            EmailServiceModel.enabled == True
+        ).first()
+
+        if not db_service:
+            raise ValueError(f"邮箱服务不存在或已禁用: {email_service_id}")
+
+        service_type = EmailServiceType(db_service.service_type)
+        config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
+        crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
+        logger.info(f"使用数据库邮箱服务: {db_service.name} (ID: {db_service.id}, 类型: {service_type.value})")
+        return EmailServiceFactory.create(service_type, config)
+
+    if service_type == EmailServiceType.TEMPMAIL:
+        config = {
+            "base_url": settings.tempmail_base_url,
+            "timeout": settings.tempmail_timeout,
+            "max_retries": settings.tempmail_max_retries,
+            "proxy_url": actual_proxy_url,
+        }
+        return EmailServiceFactory.create(service_type, config)
+
+    if service_type == EmailServiceType.MOE_MAIL:
+        from ...database.models import EmailService as EmailServiceModel
+
+        db_service = db.query(EmailServiceModel).filter(
+            EmailServiceModel.service_type == "moe_mail",
+            EmailServiceModel.enabled == True
+        ).order_by(EmailServiceModel.priority.asc()).first()
+
+        if db_service and db_service.config:
+            config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
+            crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
+            logger.info(f"使用数据库自定义域名服务: {db_service.name}")
+            return EmailServiceFactory.create(service_type, config)
+
+        if settings.custom_domain_base_url and settings.custom_domain_api_key:
+            config = {
+                "base_url": settings.custom_domain_base_url,
+                "api_key": settings.custom_domain_api_key.get_secret_value() if settings.custom_domain_api_key else "",
+                "proxy_url": actual_proxy_url,
+            }
+            return EmailServiceFactory.create(service_type, config)
+
+        raise ValueError("没有可用的自定义域名邮箱服务，请先在设置中配置")
+
+    if service_type == EmailServiceType.OUTLOOK:
+        from ...database.models import Account, EmailService as EmailServiceModel
+
+        outlook_services = db.query(EmailServiceModel).filter(
+            EmailServiceModel.service_type == "outlook",
+            EmailServiceModel.enabled == True
+        ).order_by(EmailServiceModel.priority.asc()).all()
+
+        if not outlook_services:
+            raise ValueError("没有可用的 Outlook 账户，请先在设置中导入账户")
+
+        selected_service = None
+        for svc in outlook_services:
+            email = svc.config.get("email") if svc.config else None
+            if not email:
+                continue
+            normalized_email = str(email).strip().lower()
+            existing = db.query(Account).filter(
+                func.lower(Account.email) == normalized_email
+            ).first()
+            if not existing:
+                selected_service = svc
+                logger.info(f"选择未注册的 Outlook 账户: {email}")
+                break
+            logger.info(f"跳过已注册的 Outlook 账户: {email}")
+
+        if not selected_service or not selected_service.config:
+            raise ValueError("所有 Outlook 账户都已注册过 OpenAI 账号，请添加新的 Outlook 账户")
+
+        config = selected_service.config.copy()
+        crud.update_registration_task(db, task_uuid, email_service_id=selected_service.id)
+        logger.info(f"使用数据库 Outlook 账户: {selected_service.name}")
+        return EmailServiceFactory.create(service_type, config)
+
+    if service_type == EmailServiceType.DUCK_MAIL:
+        from ...database.models import EmailService as EmailServiceModel
+
+        db_service = db.query(EmailServiceModel).filter(
+            EmailServiceModel.service_type == "duck_mail",
+            EmailServiceModel.enabled == True
+        ).order_by(EmailServiceModel.priority.asc()).first()
+
+        if not db_service or not db_service.config:
+            raise ValueError("没有可用的 DuckMail 邮箱服务，请先在邮箱服务页面添加服务")
+
+        config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
+        crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
+        logger.info(f"使用数据库 DuckMail 服务: {db_service.name}")
+        return EmailServiceFactory.create(service_type, config)
+
+    if service_type == EmailServiceType.FREEMAIL:
+        from ...database.models import EmailService as EmailServiceModel
+
+        db_service = db.query(EmailServiceModel).filter(
+            EmailServiceModel.service_type == "freemail",
+            EmailServiceModel.enabled == True
+        ).order_by(EmailServiceModel.priority.asc()).first()
+
+        if not db_service or not db_service.config:
+            raise ValueError("没有可用的 Freemail 邮箱服务，请先在邮箱服务页面添加服务")
+
+        config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
+        crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
+        logger.info(f"使用数据库 Freemail 服务: {db_service.name}")
+        return EmailServiceFactory.create(service_type, config)
+
+    if service_type == EmailServiceType.IMAP_MAIL:
+        from ...database.models import EmailService as EmailServiceModel
+
+        db_service = db.query(EmailServiceModel).filter(
+            EmailServiceModel.service_type == "imap_mail",
+            EmailServiceModel.enabled == True
+        ).order_by(EmailServiceModel.priority.asc()).first()
+
+        if not db_service or not db_service.config:
+            raise ValueError("没有可用的 IMAP 邮箱服务，请先在邮箱服务中添加")
+
+        config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
+        crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
+        logger.info(f"使用数据库 IMAP 邮箱服务: {db_service.name}")
+        return EmailServiceFactory.create(service_type, config)
+
+    return EmailServiceFactory.create(service_type, email_service_config or {})
+
+
 def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: Optional[str], email_service_config: Optional[dict], email_service_id: Optional[int] = None, log_prefix: str = "", batch_id: str = "", auto_upload_cpa: bool = False, cpa_service_ids: List[int] = None, auto_upload_sub2api: bool = False, sub2api_service_ids: List[int] = None, auto_upload_tm: bool = False, tm_service_ids: List[int] = None, registration_type: str = RoleTag.CHILD.value):
     """
     在线程池中执行的同步注册任务
@@ -256,180 +512,140 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
 
             # 更新 TaskManager 状态
             task_manager.update_status(task_uuid, "running")
-
-            # 确定使用的代理
-            # 如果前端传入了代理参数，使用传入的
-            # 否则从代理列表或系统设置中获取
-            actual_proxy_url = proxy
-            proxy_id = None
-
-            if not actual_proxy_url:
-                actual_proxy_url, proxy_id = get_proxy_for_registration(db)
-                if actual_proxy_url:
-                    logger.info(f"任务 {task_uuid} 使用代理: {actual_proxy_url[:50]}...")
-
-            # 更新任务的代理记录
-            crud.update_registration_task(db, task_uuid, proxy=actual_proxy_url)
-
-            # 创建邮箱服务
-            service_type = EmailServiceType(email_service_type)
-            settings = get_settings()
-
-            # 优先使用数据库中配置的邮箱服务
-            if email_service_id:
-                from ...database.models import EmailService as EmailServiceModel
-                db_service = db.query(EmailServiceModel).filter(
-                    EmailServiceModel.id == email_service_id,
-                    EmailServiceModel.enabled == True
-                ).first()
-
-                if db_service:
-                    service_type = EmailServiceType(db_service.service_type)
-                    config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
-                    # 更新任务关联的邮箱服务
-                    crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
-                    logger.info(f"使用数据库邮箱服务: {db_service.name} (ID: {db_service.id}, 类型: {service_type.value})")
-                else:
-                    raise ValueError(f"邮箱服务不存在或已禁用: {email_service_id}")
-            else:
-                # 使用默认配置或传入的配置
-                if service_type == EmailServiceType.TEMPMAIL:
-                    config = {
-                        "base_url": settings.tempmail_base_url,
-                        "timeout": settings.tempmail_timeout,
-                        "max_retries": settings.tempmail_max_retries,
-                        "proxy_url": actual_proxy_url,
-                    }
-                elif service_type == EmailServiceType.MOE_MAIL:
-                    # 检查数据库中是否有可用的自定义域名服务
-                    from ...database.models import EmailService as EmailServiceModel
-                    db_service = db.query(EmailServiceModel).filter(
-                        EmailServiceModel.service_type == "moe_mail",
-                        EmailServiceModel.enabled == True
-                    ).order_by(EmailServiceModel.priority.asc()).first()
-
-                    if db_service and db_service.config:
-                        config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
-                        crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
-                        logger.info(f"使用数据库自定义域名服务: {db_service.name}")
-                    elif settings.custom_domain_base_url and settings.custom_domain_api_key:
-                        config = {
-                            "base_url": settings.custom_domain_base_url,
-                            "api_key": settings.custom_domain_api_key.get_secret_value() if settings.custom_domain_api_key else "",
-                            "proxy_url": actual_proxy_url,
-                        }
-                    else:
-                        raise ValueError("没有可用的自定义域名邮箱服务，请先在设置中配置")
-                elif service_type == EmailServiceType.OUTLOOK:
-                    # 检查数据库中是否有可用的 Outlook 账户
-                    from ...database.models import EmailService as EmailServiceModel, Account
-                    # 获取所有启用的 Outlook 服务
-                    outlook_services = db.query(EmailServiceModel).filter(
-                        EmailServiceModel.service_type == "outlook",
-                        EmailServiceModel.enabled == True
-                    ).order_by(EmailServiceModel.priority.asc()).all()
-
-                    if not outlook_services:
-                        raise ValueError("没有可用的 Outlook 账户，请先在设置中导入账户")
-
-                    # 找到一个未注册的 Outlook 账户
-                    selected_service = None
-                    for svc in outlook_services:
-                        email = svc.config.get("email") if svc.config else None
-                        if not email:
-                            continue
-                        normalized_email = str(email).strip().lower()
-                        # 检查是否已在 accounts 表中注册
-                        existing = db.query(Account).filter(
-                            func.lower(Account.email) == normalized_email
-                        ).first()
-                        if not existing:
-                            selected_service = svc
-                            logger.info(f"选择未注册的 Outlook 账户: {email}")
-                            break
-                        else:
-                            logger.info(f"跳过已注册的 Outlook 账户: {email}")
-
-                    if selected_service and selected_service.config:
-                        config = selected_service.config.copy()
-                        crud.update_registration_task(db, task_uuid, email_service_id=selected_service.id)
-                        logger.info(f"使用数据库 Outlook 账户: {selected_service.name}")
-                    else:
-                        raise ValueError("所有 Outlook 账户都已注册过 OpenAI 账号，请添加新的 Outlook 账户")
-                elif service_type == EmailServiceType.DUCK_MAIL:
-                    from ...database.models import EmailService as EmailServiceModel
-
-                    db_service = db.query(EmailServiceModel).filter(
-                        EmailServiceModel.service_type == "duck_mail",
-                        EmailServiceModel.enabled == True
-                    ).order_by(EmailServiceModel.priority.asc()).first()
-
-                    if db_service and db_service.config:
-                        config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
-                        crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
-                        logger.info(f"使用数据库 DuckMail 服务: {db_service.name}")
-                    else:
-                        raise ValueError("没有可用的 DuckMail 邮箱服务，请先在邮箱服务页面添加服务")
-                elif service_type == EmailServiceType.FREEMAIL:
-                    from ...database.models import EmailService as EmailServiceModel
-
-                    db_service = db.query(EmailServiceModel).filter(
-                        EmailServiceModel.service_type == "freemail",
-                        EmailServiceModel.enabled == True
-                    ).order_by(EmailServiceModel.priority.asc()).first()
-
-                    if db_service and db_service.config:
-                        config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
-                        crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
-                        logger.info(f"使用数据库 Freemail 服务: {db_service.name}")
-                    else:
-                        raise ValueError("没有可用的 Freemail 邮箱服务，请先在邮箱服务页面添加服务")
-                elif service_type == EmailServiceType.IMAP_MAIL:
-                    from ...database.models import EmailService as EmailServiceModel
-
-                    db_service = db.query(EmailServiceModel).filter(
-                        EmailServiceModel.service_type == "imap_mail",
-                        EmailServiceModel.enabled == True
-                    ).order_by(EmailServiceModel.priority.asc()).first()
-
-                    if db_service and db_service.config:
-                        config = _normalize_email_service_config(service_type, db_service.config, actual_proxy_url)
-                        crud.update_registration_task(db, task_uuid, email_service_id=db_service.id)
-                        logger.info(f"使用数据库 IMAP 邮箱服务: {db_service.name}")
-                    else:
-                        raise ValueError("没有可用的 IMAP 邮箱服务，请先在邮箱服务中添加")
-                else:
-                    config = email_service_config or {}
-
-            email_service = EmailServiceFactory.create(service_type, config)
-
-            # 创建注册引擎 - 使用 TaskManager 的日志回调
             log_callback = task_manager.create_log_callback(task_uuid, prefix=log_prefix, batch_id=batch_id)
-
-            engine = RegistrationEngine(
-                email_service=email_service,
-                proxy_url=actual_proxy_url,
-                callback_logger=log_callback,
-                task_uuid=task_uuid
-            )
-
-            # 执行注册
             role_tag = normalize_role_tag(registration_type)
             account_label = role_tag_to_account_label(role_tag)
-            result = engine.run()
+            explicit_proxy = str(proxy or "").strip() or None
+            attempted_proxy_ids: Set[int] = set()
+            dynamic_attempt_count = 0
+            settings_proxy_attempted = False
+            current_proxy = ProxySelectionResult(
+                proxy_url=explicit_proxy,
+                proxy_id=None,
+                proxy_source="explicit" if explicit_proxy else "none",
+                strategy="explicit" if explicit_proxy else normalize_proxy_assignment_strategy(
+                    getattr(get_settings(), "proxy_assignment_strategy", "round_robin")
+                ),
+            )
+            result = RegistrationResult(success=False, error_message="未开始执行")
+            engine = None
+
+            while True:
+                if task_manager.is_cancelled(task_uuid):
+                    logger.info(f"任务 {task_uuid} 已取消，停止继续尝试")
+                    return
+
+                if explicit_proxy:
+                    current_proxy = ProxySelectionResult(
+                        proxy_url=explicit_proxy,
+                        proxy_id=None,
+                        proxy_source="explicit",
+                        strategy="explicit",
+                    )
+                else:
+                    current_proxy = get_proxy_for_registration(
+                        db,
+                        exclude_proxy_ids=attempted_proxy_ids,
+                        dynamic_attempt_count=dynamic_attempt_count,
+                        allow_settings_fallback=not settings_proxy_attempted,
+                    )
+
+                actual_proxy_url = current_proxy.proxy_url
+                proxy_id = current_proxy.proxy_id
+
+                if not actual_proxy_url and current_proxy.proxy_source == "proxy_list_exhausted":
+                    result = RegistrationResult(success=False, error_message="所有可用代理均已尝试且仍失败")
+                    log_callback("[代理] 代理列表已全部尝试，当前任务不再继续重试")
+                    break
+
+                if not actual_proxy_url:
+                    result = RegistrationResult(success=False, error_message="没有可用代理可供当前任务使用")
+                    log_callback("[代理] 未找到可用代理，任务结束")
+                    break
+
+                if current_proxy.proxy_source == "dynamic":
+                    dynamic_attempt_count += 1
+                elif current_proxy.proxy_source == "settings":
+                    settings_proxy_attempted = True
+
+                if current_proxy.proxy_source == "proxy_list":
+                    log_callback(
+                        f"[代理] 按策略 {current_proxy.strategy} 分配代理(ID={proxy_id}): {_mask_proxy_for_log(actual_proxy_url)}"
+                    )
+                elif current_proxy.proxy_source == "dynamic":
+                    log_callback(f"[代理] 代理列表不可用，使用动态代理: {_mask_proxy_for_log(actual_proxy_url)}")
+                elif current_proxy.proxy_source == "settings":
+                    log_callback(f"[代理] 代理列表与动态代理不可用，回退全局静态代理: {_mask_proxy_for_log(actual_proxy_url)}")
+                elif current_proxy.proxy_source == "explicit":
+                    log_callback(f"[代理] 使用显式传入代理: {_mask_proxy_for_log(actual_proxy_url)}")
+
+                crud.update_registration_task(db, task_uuid, proxy=actual_proxy_url)
+
+                try:
+                    email_service = _build_email_service_for_task(
+                        db,
+                        task_uuid,
+                        email_service_type,
+                        email_service_config,
+                        email_service_id,
+                        actual_proxy_url,
+                    )
+                    engine = RegistrationEngine(
+                        email_service=email_service,
+                        proxy_url=actual_proxy_url,
+                        callback_logger=log_callback,
+                        task_uuid=task_uuid
+                    )
+                    result = engine.run()
+                except Exception as attempt_error:
+                    logger.error(f"任务 {task_uuid} 注册尝试异常: {attempt_error}")
+                    result = RegistrationResult(success=False, error_message=str(attempt_error))
+
+                if result.success:
+                    break
+
+                error_message = str(result.error_message or "").strip()
+                if explicit_proxy or not is_retryable_proxy_error(error_message):
+                    break
+
+                if current_proxy.proxy_source == "proxy_list" and proxy_id is not None:
+                    attempted_proxy_ids.add(proxy_id)
+                    remaining_proxies = [
+                        item.id for item in crud.get_enabled_proxies(db)
+                        if item.id not in attempted_proxy_ids
+                    ]
+                    if remaining_proxies:
+                        log_callback(
+                            f"[代理] 当前代理失败，准备切换到下一个代理重试: {error_message or '未知代理错误'}"
+                        )
+                        continue
+                    log_callback("[代理] 代理列表中的可用代理已全部尝试完毕")
+                    result.error_message = error_message or "所有代理尝试后仍失败"
+                    break
+
+                if current_proxy.proxy_source == "dynamic" and dynamic_attempt_count < 2:
+                    log_callback(
+                        f"[代理] 动态代理疑似异常，重新获取新代理重试一次: {error_message or '未知代理错误'}"
+                    )
+                    continue
+
+                break
 
             if result.success:
                 # 更新代理使用时间
-                update_proxy_usage(db, proxy_id)
+                update_proxy_usage(db, current_proxy.proxy_id)
 
                 metadata = result.metadata if isinstance(result.metadata, dict) else {}
                 metadata["account_label"] = account_label
                 metadata["role_tag"] = role_tag
                 metadata["registration_type"] = role_tag
+                metadata["proxy_source"] = current_proxy.proxy_source
+                metadata["proxy_assignment_strategy"] = current_proxy.strategy
                 result.metadata = metadata
 
                 # 保存到数据库
-                engine.save_to_database(result, account_label=account_label, role_tag=role_tag)
+                if engine:
+                    engine.save_to_database(result, account_label=account_label, role_tag=role_tag)
 
                 # 自动上传到 CPA（可多服务）
                 if auto_upload_cpa:

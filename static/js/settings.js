@@ -360,6 +360,7 @@ async function loadSettings() {
         document.getElementById('dynamic-proxy-api-url').value = data.proxy?.dynamic_api_url || '';
         document.getElementById('dynamic-proxy-api-key-header').value = data.proxy?.dynamic_api_key_header || 'X-API-Key';
         document.getElementById('dynamic-proxy-result-field').value = data.proxy?.dynamic_result_field || '';
+        document.getElementById('proxy-assignment-strategy').value = data.proxy?.assignment_strategy || 'round_robin';
 
         // 注册配置
         document.getElementById('max-retries').value = data.registration?.max_retries || 3;
@@ -1188,7 +1189,8 @@ async function handleSaveDynamicProxy(e) {
         api_url: document.getElementById('dynamic-proxy-api-url').value.trim(),
         api_key: document.getElementById('dynamic-proxy-api-key').value || null,
         api_key_header: document.getElementById('dynamic-proxy-api-key-header').value.trim() || 'X-API-Key',
-        result_field: document.getElementById('dynamic-proxy-result-field').value.trim()
+        result_field: document.getElementById('dynamic-proxy-result-field').value.trim(),
+        assignment_strategy: document.getElementById('proxy-assignment-strategy').value || 'round_robin'
     };
     try {
         await api.post('/settings/proxy/dynamic', data);

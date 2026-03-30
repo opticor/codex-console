@@ -493,7 +493,7 @@ async function handleStartRegistration(e) {
     // 清空日志
     elements.consoleLog.innerHTML = '';
 
-    // 构建请求数据（代理从设置中自动获取）
+    // 构建请求数据（未手填代理时，由代理设置中的分配策略自动选择）
     const requestData = {
         email_service_type: emailServiceType,
         registration_type: elements.registrationType ? elements.registrationType.value : 'none',

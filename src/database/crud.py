@@ -2,7 +2,9 @@
 数据库 CRUD 操作
 """
 
-from typing import List, Optional, Dict, Any, Union
+import random
+import threading
+from typing import List, Optional, Dict, Any, Union, Iterable, Set
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, desc, asc, func
@@ -15,6 +17,7 @@ from ..config.constants import (
     normalize_role_tag,
     role_tag_to_account_label,
 )
+from ..config.settings import normalize_proxy_assignment_strategy
 from .models import (
     Account,
     EmailService,
@@ -27,6 +30,9 @@ from .models import (
     TeamInviteRecord,
     OperationAuditLog,
 )
+
+PROXY_ROTATION_LAST_ID_KEY = "proxy.rotation_last_id"
+_proxy_rotation_lock = threading.Lock()
 
 
 # ============================================================================
@@ -593,6 +599,78 @@ def _ensure_single_default_proxy(db: Session) -> Optional[Proxy]:
     return keeper
 
 
+def _normalize_proxy_exclude_ids(exclude_ids: Optional[Iterable[int]]) -> Set[int]:
+    normalized: Set[int] = set()
+    for proxy_id in exclude_ids or []:
+        try:
+            normalized.add(int(proxy_id))
+        except Exception:
+            continue
+    return normalized
+
+
+def _enabled_proxy_query(db: Session, exclude_ids: Optional[Iterable[int]] = None):
+    query = db.query(Proxy).filter(Proxy.enabled == True)
+    normalized_excludes = _normalize_proxy_exclude_ids(exclude_ids)
+    if normalized_excludes:
+        query = query.filter(~Proxy.id.in_(sorted(normalized_excludes)))
+    return query
+
+
+def get_proxy_rotation_last_id(db: Session) -> int:
+    row = get_setting(db, PROXY_ROTATION_LAST_ID_KEY)
+    if not row or row.value is None:
+        return 0
+    try:
+        return int(str(row.value).strip() or "0")
+    except Exception:
+        return 0
+
+
+def set_proxy_rotation_last_id(db: Session, proxy_id: int) -> None:
+    set_setting(
+        db,
+        PROXY_ROTATION_LAST_ID_KEY,
+        str(int(proxy_id)),
+        description="注册代理轮询游标",
+        category="proxy",
+    )
+
+
+def select_proxy_for_registration(
+    db: Session,
+    *,
+    strategy: str = "round_robin",
+    exclude_ids: Optional[Iterable[int]] = None,
+) -> Optional[Proxy]:
+    """按指定策略为注册任务选择一个启用代理。"""
+    normalized_strategy = normalize_proxy_assignment_strategy(strategy)
+    normalized_excludes = _normalize_proxy_exclude_ids(exclude_ids)
+
+    if normalized_strategy == "random":
+        proxies = _enabled_proxy_query(db, normalized_excludes).order_by(asc(Proxy.id)).all()
+        if not proxies:
+            return None
+        return random.choice(proxies)
+
+    if normalized_strategy == "least_recently_used":
+        return (
+            _enabled_proxy_query(db, normalized_excludes)
+            .order_by(asc(Proxy.last_used.isnot(None)), asc(Proxy.last_used), asc(Proxy.id))
+            .first()
+        )
+
+    with _proxy_rotation_lock:
+        proxies = _enabled_proxy_query(db, normalized_excludes).order_by(asc(Proxy.id)).all()
+        if not proxies:
+            return None
+
+        last_id = get_proxy_rotation_last_id(db)
+        selected = next((proxy for proxy in proxies if proxy.id > last_id), proxies[0])
+        set_proxy_rotation_last_id(db, selected.id)
+        return selected
+
+
 def create_proxy(
     db: Session,
     name: str,
@@ -649,7 +727,7 @@ def get_proxies(
 
 def get_enabled_proxies(db: Session) -> List[Proxy]:
     """获取所有启用的代理"""
-    return db.query(Proxy).filter(Proxy.enabled == True).all()
+    return db.query(Proxy).filter(Proxy.enabled == True).order_by(asc(Proxy.id)).all()
 
 
 def update_proxy(

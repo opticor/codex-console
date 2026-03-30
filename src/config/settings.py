@@ -276,6 +276,12 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
         category=SettingCategory.PROXY,
         description="从 JSON 响应中提取代理 URL 的字段路径（留空则使用响应原文）"
     ),
+    "proxy_assignment_strategy": SettingDefinition(
+        db_key="proxy.assignment_strategy",
+        default_value="round_robin",
+        category=SettingCategory.PROXY,
+        description="代理列表分配策略 (round_robin/random/least_recently_used)"
+    ),
 
     # 注册配置
     "registration_max_retries": SettingDefinition(
@@ -453,6 +459,8 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
 # 属性名到数据库键名的映射（用于向后兼容）
 DB_SETTING_KEYS = {name: defn.db_key for name, defn in SETTING_DEFINITIONS.items()}
 
+PROXY_ASSIGNMENT_STRATEGIES = ("round_robin", "random", "least_recently_used")
+
 # 类型定义映射
 SETTING_TYPES: Dict[str, Type] = {
     "debug": bool,
@@ -461,6 +469,7 @@ SETTING_TYPES: Dict[str, Type] = {
     "proxy_enabled": bool,
     "proxy_port": int,
     "proxy_dynamic_enabled": bool,
+    "proxy_assignment_strategy": str,
     "auto_quick_refresh_enabled": bool,
     "auto_quick_refresh_interval_minutes": int,
     "auto_quick_refresh_retry_limit": int,
@@ -538,6 +547,14 @@ def _convert_value(attr_name: str, value: str) -> Any:
                 return []
     else:
         return value
+
+
+def normalize_proxy_assignment_strategy(value: Any) -> str:
+    """标准化代理分配策略，非法值回退到 round_robin。"""
+    normalized = str(value or "round_robin").strip().lower()
+    if normalized not in PROXY_ASSIGNMENT_STRATEGIES:
+        return "round_robin"
+    return normalized
 
 
 def _normalize_database_url(url: str) -> str:
@@ -684,6 +701,11 @@ class Settings(BaseModel):
                 return f"sqlite:///{v}"
         return v
 
+    @field_validator("proxy_assignment_strategy", mode="before")
+    @classmethod
+    def validate_proxy_assignment_strategy(cls, v):
+        return normalize_proxy_assignment_strategy(v)
+
     # Web UI 配置
     webui_host: str = "0.0.0.0"
     webui_port: int = 8000
@@ -724,6 +746,7 @@ class Settings(BaseModel):
     proxy_dynamic_api_key: Optional[SecretStr] = None
     proxy_dynamic_api_key_header: str = "X-API-Key"
     proxy_dynamic_result_field: str = ""
+    proxy_assignment_strategy: str = "round_robin"
 
     @property
     def proxy_url(self) -> Optional[str]:

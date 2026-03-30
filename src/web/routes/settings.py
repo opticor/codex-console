@@ -10,7 +10,11 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
 
-from ...config.settings import get_settings, update_settings
+from ...config.settings import (
+    get_settings,
+    normalize_proxy_assignment_strategy,
+    update_settings,
+)
 from ...database import crud
 from ...database.models import Proxy
 from ...database.session import get_db
@@ -132,6 +136,9 @@ async def get_all_settings():
             "host": settings.proxy_host,
             "port": settings.proxy_port,
             "username": settings.proxy_username,
+            "assignment_strategy": normalize_proxy_assignment_strategy(
+                getattr(settings, "proxy_assignment_strategy", "round_robin")
+            ),
             "has_password": bool(settings.proxy_password),
             "dynamic_enabled": settings.proxy_dynamic_enabled,
             "dynamic_api_url": settings.proxy_dynamic_api_url,
@@ -262,6 +269,9 @@ async def get_dynamic_proxy_settings():
         "api_url": settings.proxy_dynamic_api_url,
         "api_key_header": settings.proxy_dynamic_api_key_header,
         "result_field": settings.proxy_dynamic_result_field,
+        "assignment_strategy": normalize_proxy_assignment_strategy(
+            getattr(settings, "proxy_assignment_strategy", "round_robin")
+        ),
         "has_api_key": bool(settings.proxy_dynamic_api_key and settings.proxy_dynamic_api_key.get_secret_value()),
     }
 
@@ -273,16 +283,19 @@ class DynamicProxySettings(BaseModel):
     api_key: Optional[str] = None
     api_key_header: str = "X-API-Key"
     result_field: str = ""
+    assignment_strategy: str = "round_robin"
 
 
 @router.post("/proxy/dynamic")
 async def update_dynamic_proxy_settings(request: DynamicProxySettings):
     """更新动态代理设置"""
+    assignment_strategy = normalize_proxy_assignment_strategy(request.assignment_strategy)
     update_dict = {
         "proxy_dynamic_enabled": request.enabled,
         "proxy_dynamic_api_url": request.api_url,
         "proxy_dynamic_api_key_header": request.api_key_header,
         "proxy_dynamic_result_field": request.result_field,
+        "proxy_assignment_strategy": assignment_strategy,
     }
     if request.api_key is not None:
         update_dict["proxy_dynamic_api_key"] = request.api_key

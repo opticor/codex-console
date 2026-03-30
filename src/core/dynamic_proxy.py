@@ -116,3 +116,20 @@ def get_proxy_url_for_task() -> Optional[str]:
 
     # 使用静态代理
     return settings.proxy_url
+
+
+def get_dynamic_proxy_url() -> Optional[str]:
+    """仅获取动态代理，不回退静态代理。"""
+    from ..config.settings import get_settings
+
+    settings = get_settings()
+    if not settings.proxy_dynamic_enabled or not settings.proxy_dynamic_api_url:
+        return None
+
+    api_key = settings.proxy_dynamic_api_key.get_secret_value() if settings.proxy_dynamic_api_key else ""
+    return fetch_dynamic_proxy(
+        api_url=settings.proxy_dynamic_api_url,
+        api_key=api_key,
+        api_key_header=settings.proxy_dynamic_api_key_header,
+        result_field=settings.proxy_dynamic_result_field,
+    )
