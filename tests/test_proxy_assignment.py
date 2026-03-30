@@ -105,6 +105,120 @@ def test_update_dynamic_proxy_settings_saves_assignment_strategy(monkeypatch):
     assert captured["proxy_assignment_strategy"] == "least_recently_used"
 
 
+def test_proxy_to_dict_exposes_success_metrics():
+    db = _make_db()
+    try:
+        proxy = crud.create_proxy(db, name="stats", type="http", host="127.0.0.1", port=9001)
+        crud.update_proxy(db, proxy.id, success_count=3, failure_count=1)
+
+        result = crud.get_proxy_by_id(db, proxy.id).to_dict()
+
+        assert result["success_count"] == 3
+        assert result["failure_count"] == 1
+        assert result["success_rate"] == 75.0
+    finally:
+        db.close()
+
+
+def test_increment_proxy_success_updates_last_used_timestamp():
+    db = _make_db()
+    try:
+        proxy = crud.create_proxy(db, name="success", type="http", host="127.0.0.1", port=9002)
+
+        updated = crud.increment_proxy_success(db, proxy.id)
+        refreshed = crud.get_proxy_by_id(db, proxy.id)
+
+        assert updated is True
+        assert refreshed.success_count == 1
+        assert refreshed.failure_count == 0
+        assert refreshed.last_used is not None
+    finally:
+        db.close()
+
+
+def test_increment_proxy_failure_does_not_touch_last_used():
+    db = _make_db()
+    try:
+        proxy = crud.create_proxy(db, name="failure", type="http", host="127.0.0.1", port=9003)
+
+        updated = crud.increment_proxy_failure(db, proxy.id)
+        refreshed = crud.get_proxy_by_id(db, proxy.id)
+
+        assert updated is True
+        assert refreshed.success_count == 0
+        assert refreshed.failure_count == 1
+        assert refreshed.last_used is None
+    finally:
+        db.close()
+
+
+def test_get_proxies_list_returns_success_metrics(monkeypatch):
+    db = _make_db()
+    try:
+        proxy = crud.create_proxy(db, name="list", type="http", host="127.0.0.1", port=9004)
+        crud.update_proxy(db, proxy.id, success_count=2, failure_count=2)
+
+        @contextmanager
+        def fake_get_db():
+            yield db
+
+        monkeypatch.setattr(settings_routes, "get_db", fake_get_db)
+
+        result = asyncio.run(settings_routes.get_proxies_list())
+
+        assert result["total"] == 1
+        assert result["proxies"][0]["success_count"] == 2
+        assert result["proxies"][0]["failure_count"] == 2
+        assert result["proxies"][0]["success_rate"] == 50.0
+    finally:
+        db.close()
+
+
+def test_batch_proxy_routes_return_counts_and_missing_ids(monkeypatch):
+    db = _make_db()
+    try:
+        proxy_a = crud.create_proxy(db, name="a", type="http", host="127.0.0.1", port=9101)
+        proxy_b = crud.create_proxy(db, name="b", type="http", host="127.0.0.1", port=9102)
+        crud.update_proxy(db, proxy_b.id, enabled=False)
+
+        @contextmanager
+        def fake_get_db():
+            yield db
+
+        monkeypatch.setattr(settings_routes, "get_db", fake_get_db)
+
+        enable_result = asyncio.run(
+            settings_routes.batch_enable_proxies(
+                settings_routes.ProxyBatchActionRequest(ids=[proxy_a.id, proxy_b.id, 999])
+            )
+        )
+        delete_result = asyncio.run(
+            settings_routes.batch_delete_proxies(
+                settings_routes.ProxyBatchActionRequest(ids=[proxy_a.id, 999])
+            )
+        )
+
+        remaining = crud.get_proxy_by_id(db, proxy_b.id)
+
+        assert enable_result == {
+            "success": True,
+            "requested": 3,
+            "affected": 2,
+            "missing_ids": [999],
+        }
+        assert delete_result == {
+            "success": True,
+            "requested": 2,
+            "affected": 1,
+            "missing_ids": [999],
+        }
+        assert remaining is not None
+        assert remaining.enabled is True
+        assert remaining.is_default is True
+    finally:
+        db.close()
+
+
 def test_run_sync_registration_task_retries_next_proxy_on_proxy_error(monkeypatch):
     logs = []
     task_updates = []
@@ -157,7 +271,8 @@ def test_run_sync_registration_task_retries_next_proxy_on_proxy_error(monkeypatc
         lambda *args, **kwargs: (lambda message: logs.append(message)),
     )
     monkeypatch.setattr(registration_routes.crud, "update_registration_task", fake_update_registration_task)
-    monkeypatch.setattr(registration_routes.crud, "update_proxy_last_used", lambda db, proxy_id: True)
+    monkeypatch.setattr(registration_routes.crud, "increment_proxy_success", lambda db, proxy_id: True)
+    monkeypatch.setattr(registration_routes.crud, "increment_proxy_failure", lambda db, proxy_id: True)
     monkeypatch.setattr(registration_routes.crud, "get_enabled_proxies", lambda db: proxies)
     monkeypatch.setattr(
         registration_routes.crud,

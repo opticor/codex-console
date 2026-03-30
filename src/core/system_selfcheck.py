@@ -114,10 +114,6 @@ def _resolve_selfcheck_proxy_url() -> Optional[str]:
         with get_db() as db:
             proxy = crud.get_random_proxy(db)
             if proxy and str(proxy.proxy_url or "").strip():
-                try:
-                    crud.update_proxy_last_used(db, int(proxy.id))
-                except Exception:
-                    logger.debug("更新自检代理 last_used 失败: proxy_id=%s", getattr(proxy, "id", None), exc_info=True)
                 return str(proxy.proxy_url).strip()
     except Exception:
         logger.debug("从代理列表解析自检代理失败", exc_info=True)

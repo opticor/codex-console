@@ -33,7 +33,17 @@ const elements = {
     proxiesTable: document.getElementById('proxies-table'),
     addProxyBtn: document.getElementById('add-proxy-btn'),
     proxyBatchImportBtn: document.getElementById('proxy-batch-import-btn'),
+    proxyBatchSelectBtn: document.getElementById('proxy-batch-select-btn'),
     testAllProxiesBtn: document.getElementById('test-all-proxies-btn'),
+    proxyBatchActions: document.getElementById('proxy-batch-actions'),
+    proxyBatchSelectedCount: document.getElementById('proxy-batch-selected-count'),
+    proxyBatchEnableBtn: document.getElementById('proxy-batch-enable-btn'),
+    proxyBatchDisableBtn: document.getElementById('proxy-batch-disable-btn'),
+    proxyBatchDeleteBtn: document.getElementById('proxy-batch-delete-btn'),
+    proxyBatchCancelBtn: document.getElementById('proxy-batch-cancel-btn'),
+    proxySelectAllHeader: document.getElementById('proxy-select-all-header'),
+    proxySelectAll: document.getElementById('proxy-select-all'),
+    proxySortHeaders: document.querySelectorAll('[data-proxy-sort-key]'),
     addProxyModal: document.getElementById('add-proxy-modal'),
     proxyItemForm: document.getElementById('proxy-item-form'),
     closeProxyModal: document.getElementById('close-proxy-modal'),
@@ -85,6 +95,20 @@ const elements = {
 
 // 选中的服务 ID
 let selectedServiceIds = new Set();
+let currentProxies = [];
+let proxyBatchMode = false;
+let selectedProxyIds = new Set();
+let proxySortState = {
+    key: null,
+    direction: null
+};
+
+const PROXY_SORT_DEFAULT_DIRECTIONS = {
+    last_used: 'desc',
+    success_count: 'desc',
+    failure_count: 'desc',
+    success_rate: 'desc'
+};
 
 // 初始化
 document.addEventListener('DOMContentLoaded', () => {
@@ -221,9 +245,32 @@ function initEventListeners() {
     if (elements.proxyBatchImportBtn) {
         elements.proxyBatchImportBtn.addEventListener('click', openProxyBatchImportModal);
     }
+    if (elements.proxyBatchSelectBtn) {
+        elements.proxyBatchSelectBtn.addEventListener('click', () => toggleProxyBatchMode());
+    }
 
     if (elements.testAllProxiesBtn) {
         elements.testAllProxiesBtn.addEventListener('click', handleTestAllProxies);
+    }
+    if (elements.proxyBatchEnableBtn) {
+        elements.proxyBatchEnableBtn.addEventListener('click', () => handleProxyBatchAction('enable'));
+    }
+    if (elements.proxyBatchDisableBtn) {
+        elements.proxyBatchDisableBtn.addEventListener('click', () => handleProxyBatchAction('disable'));
+    }
+    if (elements.proxyBatchDeleteBtn) {
+        elements.proxyBatchDeleteBtn.addEventListener('click', () => handleProxyBatchAction('delete'));
+    }
+    if (elements.proxyBatchCancelBtn) {
+        elements.proxyBatchCancelBtn.addEventListener('click', () => toggleProxyBatchMode(false));
+    }
+    if (elements.proxySelectAll) {
+        elements.proxySelectAll.addEventListener('change', handleSelectAllProxies);
+    }
+    if (elements.proxySortHeaders && elements.proxySortHeaders.length > 0) {
+        elements.proxySortHeaders.forEach(header => {
+            header.addEventListener('click', () => toggleProxySort(header.dataset.proxySortKey || ''));
+        });
     }
 
     if (elements.closeProxyModal) {
@@ -863,12 +910,16 @@ function escapeHtml(text) {
 async function loadProxies() {
     try {
         const data = await api.get('/settings/proxies');
-        renderProxies(data.proxies);
+        currentProxies = Array.isArray(data.proxies) ? data.proxies : [];
+        selectedProxyIds = new Set(
+            Array.from(selectedProxyIds).filter(id => currentProxies.some(proxy => Number(proxy.id) === Number(id)))
+        );
+        renderProxies(currentProxies);
     } catch (error) {
         console.error('加载代理列表失败:', error);
         elements.proxiesTable.innerHTML = `
             <tr>
-                <td colspan="8">
+                <td colspan="${getProxyTableColspan()}">
                     <div class="empty-state">
                         <div class="empty-state-icon">❌</div>
                         <div class="empty-state-title">加载失败</div>
@@ -876,15 +927,217 @@ async function loadProxies() {
                 </td>
             </tr>
         `;
+        updateProxyBatchControls();
+    }
+}
+
+function getProxyTableColspan() {
+    return proxyBatchMode ? 12 : 11;
+}
+
+function formatProxySuccessRate(value) {
+    const rate = Number(value || 0);
+    return `${rate.toFixed(1)}%`;
+}
+
+function compareProxyValues(left, right, key) {
+    if (key === 'last_used') {
+        const leftTime = left ? new Date(left).getTime() : Number.NEGATIVE_INFINITY;
+        const rightTime = right ? new Date(right).getTime() : Number.NEGATIVE_INFINITY;
+        return leftTime - rightTime;
+    }
+    return Number(left || 0) - Number(right || 0);
+}
+
+function getSortedProxies(proxies) {
+    const items = Array.isArray(proxies) ? [...proxies] : [];
+    if (!proxySortState.key || !proxySortState.direction) {
+        return items;
+    }
+
+    const { key, direction } = proxySortState;
+    const sign = direction === 'asc' ? 1 : -1;
+    return items.sort((left, right) => {
+        const compared = compareProxyValues(left?.[key], right?.[key], key);
+        if (compared !== 0) {
+            return compared * sign;
+        }
+        return Number(left?.id || 0) - Number(right?.id || 0);
+    });
+}
+
+function updateProxySortIndicators() {
+    if (!elements.proxySortHeaders || elements.proxySortHeaders.length === 0) {
+        return;
+    }
+
+    elements.proxySortHeaders.forEach(header => {
+        const key = header.dataset.proxySortKey || '';
+        const baseLabel = header.dataset.baseLabel || header.textContent.replace(/[↑↓]/g, '').trim();
+        header.dataset.baseLabel = baseLabel;
+
+        if (proxySortState.key === key && proxySortState.direction) {
+            const arrow = proxySortState.direction === 'asc' ? '↑' : '↓';
+            header.textContent = `${baseLabel} ${arrow}`;
+        } else {
+            header.textContent = baseLabel;
+        }
+    });
+}
+
+function updateProxyBatchControls() {
+    const selectedCount = selectedProxyIds.size;
+    const sortedProxies = getSortedProxies(currentProxies);
+    const visibleIds = sortedProxies.map(proxy => Number(proxy.id));
+    const visibleCount = visibleIds.length;
+    const selectedVisibleCount = visibleIds.filter(id => selectedProxyIds.has(id)).length;
+
+    if (elements.proxyBatchActions) {
+        elements.proxyBatchActions.style.display = proxyBatchMode ? '' : 'none';
+    }
+    if (elements.proxySelectAllHeader) {
+        elements.proxySelectAllHeader.style.display = proxyBatchMode ? '' : 'none';
+    }
+    if (elements.proxyBatchSelectedCount) {
+        elements.proxyBatchSelectedCount.textContent = `已选择 ${selectedCount} 项`;
+    }
+    if (elements.proxyBatchEnableBtn) {
+        elements.proxyBatchEnableBtn.disabled = selectedCount === 0;
+    }
+    if (elements.proxyBatchDisableBtn) {
+        elements.proxyBatchDisableBtn.disabled = selectedCount === 0;
+    }
+    if (elements.proxyBatchDeleteBtn) {
+        elements.proxyBatchDeleteBtn.disabled = selectedCount === 0;
+    }
+    if (elements.proxyBatchSelectBtn) {
+        elements.proxyBatchSelectBtn.textContent = proxyBatchMode ? '取消批量' : '☑️ 批量选择';
+    }
+    if (elements.proxySelectAll) {
+        elements.proxySelectAll.checked = visibleCount > 0 && selectedVisibleCount === visibleCount;
+        elements.proxySelectAll.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < visibleCount;
+    }
+
+    updateProxySortIndicators();
+}
+
+function toggleProxyBatchMode(forceMode = null) {
+    const nextMode = typeof forceMode === 'boolean' ? forceMode : !proxyBatchMode;
+    proxyBatchMode = nextMode;
+    if (!proxyBatchMode) {
+        selectedProxyIds.clear();
+    }
+    renderProxies(currentProxies);
+}
+
+function toggleProxySort(sortKey) {
+    if (!PROXY_SORT_DEFAULT_DIRECTIONS[sortKey]) {
+        return;
+    }
+
+    if (proxySortState.key !== sortKey) {
+        proxySortState = {
+            key: sortKey,
+            direction: PROXY_SORT_DEFAULT_DIRECTIONS[sortKey]
+        };
+    } else if (proxySortState.direction === PROXY_SORT_DEFAULT_DIRECTIONS[sortKey]) {
+        proxySortState.direction = PROXY_SORT_DEFAULT_DIRECTIONS[sortKey] === 'desc' ? 'asc' : 'desc';
+    } else {
+        proxySortState = {
+            key: null,
+            direction: null
+        };
+    }
+
+    renderProxies(currentProxies);
+}
+
+function toggleProxySelection(id, checked) {
+    const proxyId = Number(id);
+    if (checked) {
+        selectedProxyIds.add(proxyId);
+    } else {
+        selectedProxyIds.delete(proxyId);
+    }
+    updateProxyBatchControls();
+}
+
+function handleSelectAllProxies(event) {
+    const checked = Boolean(event?.target?.checked);
+    const visibleIds = getSortedProxies(currentProxies).map(proxy => Number(proxy.id));
+    if (checked) {
+        visibleIds.forEach(id => selectedProxyIds.add(id));
+    } else {
+        visibleIds.forEach(id => selectedProxyIds.delete(id));
+    }
+    renderProxies(currentProxies);
+}
+
+async function handleProxyBatchAction(action) {
+    const ids = Array.from(selectedProxyIds);
+    if (ids.length === 0) {
+        toast.warning('请先选择至少一个代理');
+        return;
+    }
+
+    const endpointMap = {
+        enable: '/settings/proxies/batch-enable',
+        disable: '/settings/proxies/batch-disable',
+        delete: '/settings/proxies/batch-delete'
+    };
+    const actionLabelMap = {
+        enable: '启用',
+        disable: '停用',
+        delete: '删除'
+    };
+    const endpoint = endpointMap[action];
+    if (!endpoint) {
+        return;
+    }
+
+    if (action === 'delete') {
+        const confirmed = await confirm(`确定要批量删除已选择的 ${ids.length} 个代理吗？`);
+        if (!confirmed) {
+            return;
+        }
+    }
+
+    const triggerButton =
+        action === 'enable'
+            ? elements.proxyBatchEnableBtn
+            : action === 'disable'
+                ? elements.proxyBatchDisableBtn
+                : elements.proxyBatchDeleteBtn;
+    const originalText = triggerButton ? triggerButton.textContent : '';
+
+    if (triggerButton) {
+        triggerButton.disabled = true;
+        triggerButton.innerHTML = '<span class="loading-spinner"></span> 处理中...';
+    }
+
+    try {
+        const result = await api.post(endpoint, { ids });
+        toast.success(`批量${actionLabelMap[action]}完成：已处理 ${result.affected || 0} 项`);
+        selectedProxyIds.clear();
+        await loadProxies();
+    } catch (error) {
+        toast.error(`批量${actionLabelMap[action]}失败: ${error.message}`);
+    } finally {
+        if (triggerButton) {
+            triggerButton.disabled = false;
+            triggerButton.textContent = originalText;
+        }
+        updateProxyBatchControls();
     }
 }
 
 // 渲染代理列表
 function renderProxies(proxies) {
-    if (!proxies || proxies.length === 0) {
+    const sortedProxies = getSortedProxies(proxies);
+    if (!sortedProxies || sortedProxies.length === 0) {
         elements.proxiesTable.innerHTML = `
             <tr>
-                <td colspan="8">
+                <td colspan="${getProxyTableColspan()}">
                     <div class="empty-state">
                         <div class="empty-state-icon">🌐</div>
                         <div class="empty-state-title">暂无代理</div>
@@ -893,11 +1146,22 @@ function renderProxies(proxies) {
                 </td>
             </tr>
         `;
+        updateProxyBatchControls();
         return;
     }
 
-    elements.proxiesTable.innerHTML = proxies.map(proxy => `
+    elements.proxiesTable.innerHTML = sortedProxies.map(proxy => `
         <tr data-proxy-id="${proxy.id}">
+            ${proxyBatchMode ? `
+                <td>
+                    <input
+                        type="checkbox"
+                        class="proxy-checkbox"
+                        ${selectedProxyIds.has(Number(proxy.id)) ? 'checked' : ''}
+                        onchange="toggleProxySelection(${proxy.id}, this.checked)"
+                    >
+                </td>
+            ` : ''}
             <td>${proxy.id}</td>
             <td>${escapeHtml(proxy.name)}</td>
             <td><span class="badge">${proxy.type.toUpperCase()}</span></td>
@@ -910,6 +1174,9 @@ function renderProxies(proxies) {
             </td>
             <td title="${proxy.enabled ? '已启用' : '已禁用'}">${proxy.enabled ? '✅' : '⭕'}</td>
             <td>${format.date(proxy.last_used)}</td>
+            <td>${Number(proxy.success_count || 0)}</td>
+            <td>${Number(proxy.failure_count || 0)}</td>
+            <td>${formatProxySuccessRate(proxy.success_rate)}</td>
             <td>
                 <div style="display:flex;gap:4px;align-items:center;white-space:nowrap;">
                     <button class="btn btn-secondary btn-sm" onclick="editProxyItem(${proxy.id})">编辑</button>
@@ -926,6 +1193,7 @@ function renderProxies(proxies) {
             </td>
         </tr>
     `).join('');
+    updateProxyBatchControls();
 }
 
 function toggleSettingsMoreMenu(btn) {

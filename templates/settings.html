@@ -115,28 +115,44 @@
                         <h3>代理列表</h3>
                         <div style="display: flex; gap: var(--spacing-sm);">
                             <button class="btn btn-secondary btn-sm" id="test-all-proxies-btn">🔌 测试全部</button>
+                            <button class="btn btn-secondary btn-sm" id="proxy-batch-select-btn">☑️ 批量选择</button>
                             <button class="btn btn-secondary btn-sm" id="proxy-batch-import-btn">📥 批量导入</button>
                             <button class="btn btn-primary btn-sm" id="add-proxy-btn">➕ 添加代理</button>
                         </div>
                     </div>
                     <div class="card-body" style="padding: 0;">
+                        <div id="proxy-batch-actions" style="display:none; padding: var(--spacing-sm) var(--spacing-md); border-bottom: 1px solid var(--border-light); background: var(--surface-muted);">
+                            <div style="display:flex; gap: var(--spacing-sm); align-items:center; flex-wrap: wrap;">
+                                <span id="proxy-batch-selected-count" style="color: var(--text-muted);">已选择 0 项</span>
+                                <button class="btn btn-secondary btn-sm" id="proxy-batch-enable-btn" disabled>批量启用</button>
+                                <button class="btn btn-secondary btn-sm" id="proxy-batch-disable-btn" disabled>批量停用</button>
+                                <button class="btn btn-danger btn-sm" id="proxy-batch-delete-btn" disabled>批量删除</button>
+                                <button class="btn btn-ghost btn-sm" id="proxy-batch-cancel-btn">取消选择</button>
+                            </div>
+                        </div>
                         <div class="table-container proxy-table-container">
                             <table class="data-table">
                                 <thead>
                                     <tr>
+                                        <th id="proxy-select-all-header" style="width: 44px; display:none;">
+                                            <input type="checkbox" id="proxy-select-all">
+                                        </th>
                                         <th style="width: 50px;">ID</th>
                                         <th>名称</th>
                                         <th>类型</th>
                                         <th>地址</th>
                                         <th style="width: 60px;">默认</th>
                                         <th style="width: 80px;">状态</th>
-                                        <th style="width: 120px;">最后使用</th>
+                                        <th class="sortable-th" data-proxy-sort-key="last_used" style="width: 140px; cursor: pointer;">最后成功时间</th>
+                                        <th class="sortable-th" data-proxy-sort-key="success_count" style="width: 90px; cursor: pointer;">成功数</th>
+                                        <th class="sortable-th" data-proxy-sort-key="failure_count" style="width: 90px; cursor: pointer;">失败数</th>
+                                        <th class="sortable-th" data-proxy-sort-key="success_rate" style="width: 90px; cursor: pointer;">成功率</th>
                                         <th style="width: 180px;">操作</th>
                                     </tr>
                                 </thead>
                                 <tbody id="proxies-table">
                                     <tr>
-                                        <td colspan="8">
+                                        <td colspan="12">
                                             <div class="empty-state">
                                                 <div class="empty-state-icon">🌐</div>
                                                 <div class="empty-state-title">暂无代理</div>

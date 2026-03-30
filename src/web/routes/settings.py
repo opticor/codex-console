@@ -725,6 +725,11 @@ class ProxyUpdateRequest(BaseModel):
     priority: Optional[int] = None
 
 
+class ProxyBatchActionRequest(BaseModel):
+    """代理批量操作请求"""
+    ids: List[int]
+
+
 class ProxyBatchImportRequest(BaseModel):
     """批量导入代理请求"""
     content: str
@@ -1139,6 +1144,30 @@ async def disable_proxy(proxy_id: int):
         if not proxy:
             raise HTTPException(status_code=404, detail="代理不存在")
         return {"success": True, "message": "代理已禁用"}
+
+
+@router.post("/proxies/batch-enable")
+async def batch_enable_proxies(request: ProxyBatchActionRequest):
+    """批量启用代理"""
+    with get_db() as db:
+        result = crud.update_proxies_enabled_batch(db, request.ids, True)
+        return {"success": True, **result}
+
+
+@router.post("/proxies/batch-disable")
+async def batch_disable_proxies(request: ProxyBatchActionRequest):
+    """批量禁用代理"""
+    with get_db() as db:
+        result = crud.update_proxies_enabled_batch(db, request.ids, False)
+        return {"success": True, **result}
+
+
+@router.post("/proxies/batch-delete")
+async def batch_delete_proxies(request: ProxyBatchActionRequest):
+    """批量删除代理"""
+    with get_db() as db:
+        result = crud.delete_proxies_batch(db, request.ids)
+        return {"success": True, **result}
 
 
 # ============== Outlook 设置 ==============

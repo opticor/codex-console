@@ -361,7 +361,9 @@ class Proxy(Base):
     enabled = Column(Boolean, default=True)
     is_default = Column(Boolean, default=False)  # 是否为默认代理
     priority = Column(Integer, default=0)  # 优先级（保留字段）
-    last_used = Column(DateTime)  # 最后使用时间
+    success_count = Column(Integer, default=0)  # 累计注册成功数
+    failure_count = Column(Integer, default=0)  # 累计注册失败数
+    last_used = Column(DateTime)  # 最后一次注册成功时间
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -377,6 +379,12 @@ class Proxy(Base):
             'enabled': self.enabled,
             'is_default': self.is_default or False,
             'priority': self.priority,
+            'success_count': int(self.success_count or 0),
+            'failure_count': int(self.failure_count or 0),
+            'success_rate': (
+                round((int(self.success_count or 0) / (int(self.success_count or 0) + int(self.failure_count or 0))) * 100, 1)
+                if (int(self.success_count or 0) + int(self.failure_count or 0)) > 0 else 0.0
+            ),
             'last_used': self.last_used.isoformat() if self.last_used else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,

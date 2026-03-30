@@ -762,12 +762,35 @@ def delete_proxy(db: Session, proxy_id: int) -> bool:
 
 
 def update_proxy_last_used(db: Session, proxy_id: int) -> bool:
-    """更新代理最后使用时间"""
+    """兼容旧逻辑：更新代理最后成功时间。"""
     db_proxy = get_proxy_by_id(db, proxy_id)
     if not db_proxy:
         return False
 
     db_proxy.last_used = datetime.utcnow()
+    db.commit()
+    return True
+
+
+def increment_proxy_success(db: Session, proxy_id: int) -> bool:
+    """累计代理注册成功次数，并更新最后成功时间。"""
+    db_proxy = get_proxy_by_id(db, proxy_id)
+    if not db_proxy:
+        return False
+
+    db_proxy.success_count = int(db_proxy.success_count or 0) + 1
+    db_proxy.last_used = datetime.utcnow()
+    db.commit()
+    return True
+
+
+def increment_proxy_failure(db: Session, proxy_id: int) -> bool:
+    """累计代理注册失败次数。"""
+    db_proxy = get_proxy_by_id(db, proxy_id)
+    if not db_proxy:
+        return False
+
+    db_proxy.failure_count = int(db_proxy.failure_count or 0) + 1
     db.commit()
     return True
 
@@ -806,6 +829,44 @@ def set_proxy_default(db: Session, proxy_id: int) -> Optional[Proxy]:
     db.commit()
     db.refresh(proxy)
     return proxy
+
+
+def update_proxies_enabled_batch(db: Session, proxy_ids: List[int], enabled: bool) -> Dict[str, Any]:
+    """批量启用/停用代理。"""
+    normalized_ids = sorted({int(proxy_id) for proxy_id in proxy_ids or [] if proxy_id is not None})
+    if not normalized_ids:
+        return {"requested": 0, "affected": 0, "missing_ids": []}
+
+    proxies = db.query(Proxy).filter(Proxy.id.in_(normalized_ids)).all()
+    found_ids = {proxy.id for proxy in proxies}
+    for proxy in proxies:
+        proxy.enabled = bool(enabled)
+    db.commit()
+    _ensure_single_default_proxy(db)
+    return {
+        "requested": len(normalized_ids),
+        "affected": len(proxies),
+        "missing_ids": [proxy_id for proxy_id in normalized_ids if proxy_id not in found_ids],
+    }
+
+
+def delete_proxies_batch(db: Session, proxy_ids: List[int]) -> Dict[str, Any]:
+    """批量删除代理。"""
+    normalized_ids = sorted({int(proxy_id) for proxy_id in proxy_ids or [] if proxy_id is not None})
+    if not normalized_ids:
+        return {"requested": 0, "affected": 0, "missing_ids": []}
+
+    proxies = db.query(Proxy).filter(Proxy.id.in_(normalized_ids)).all()
+    found_ids = {proxy.id for proxy in proxies}
+    for proxy in proxies:
+        db.delete(proxy)
+    db.commit()
+    _ensure_single_default_proxy(db)
+    return {
+        "requested": len(normalized_ids),
+        "affected": len(proxies),
+        "missing_ids": [proxy_id for proxy_id in normalized_ids if proxy_id not in found_ids],
+    }
 
 
 def get_proxies_count(db: Session, enabled: Optional[bool] = None) -> int:

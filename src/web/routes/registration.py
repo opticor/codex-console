@@ -173,9 +173,9 @@ def get_proxy_for_registration(
 
 
 def update_proxy_usage(db, proxy_id: Optional[int]):
-    """更新代理的使用时间"""
+    """记录代理列表中的一次注册成功。"""
     if proxy_id:
-        crud.update_proxy_last_used(db, proxy_id)
+        crud.increment_proxy_success(db, proxy_id)
 
 
 # ============== Pydantic Models ==============
@@ -529,6 +529,7 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
             )
             result = RegistrationResult(success=False, error_message="未开始执行")
             engine = None
+            failed_proxy_ids: Set[int] = set()
 
             while True:
                 if task_manager.is_cancelled(task_uuid):
@@ -605,6 +606,10 @@ def _run_sync_registration_task(task_uuid: str, email_service_type: str, proxy: 
                     break
 
                 error_message = str(result.error_message or "").strip()
+                if current_proxy.proxy_source == "proxy_list" and proxy_id is not None and proxy_id not in failed_proxy_ids:
+                    crud.increment_proxy_failure(db, proxy_id)
+                    failed_proxy_ids.add(proxy_id)
+
                 if explicit_proxy or not is_retryable_proxy_error(error_message):
                     break
 

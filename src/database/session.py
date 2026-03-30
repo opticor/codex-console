@@ -229,6 +229,8 @@ class DatabaseSessionManager:
             ("cpa_services", "proxy_url", "VARCHAR(1000)"),
             ("sub2api_services", "target_type", "VARCHAR(50) DEFAULT 'sub2api'"),
             ("proxies", "is_default", "BOOLEAN DEFAULT 0"),
+            ("proxies", "success_count", "INTEGER DEFAULT 0"),
+            ("proxies", "failure_count", "INTEGER DEFAULT 0"),
             ("bind_card_tasks", "checkout_session_id", "VARCHAR(120)"),
             ("bind_card_tasks", "publishable_key", "VARCHAR(255)"),
             ("bind_card_tasks", "client_secret", "TEXT"),
