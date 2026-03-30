@@ -53,6 +53,7 @@ class TaskStatus(str, Enum):
 class EmailServiceType(str, Enum):
     """邮箱服务类型"""
     TEMPMAIL = "tempmail"
+    YYDS_MAIL = "yyds_mail"
     OUTLOOK = "outlook"
     MOE_MAIL = "moe_mail"
     TEMP_MAIL = "temp_mail"

@@ -324,12 +324,18 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
     # 邮箱服务配置
     "email_service_priority": SettingDefinition(
         db_key="email.service_priority",
-        default_value={"tempmail": 0, "outlook": 1, "moe_mail": 2},
+        default_value={"tempmail": 0, "yyds_mail": 1, "outlook": 2, "moe_mail": 3},
         category=SettingCategory.EMAIL,
         description="邮箱服务优先级"
     ),
 
     # Tempmail.lol 配置
+    "tempmail_enabled": SettingDefinition(
+        db_key="tempmail.enabled",
+        default_value=True,
+        category=SettingCategory.TEMPMAIL,
+        description="是否启用 Tempmail 渠道"
+    ),
     "tempmail_base_url": SettingDefinition(
         db_key="tempmail.base_url",
         default_value="https://api.tempmail.lol/v2",
@@ -347,6 +353,43 @@ SETTING_DEFINITIONS: Dict[str, SettingDefinition] = {
         default_value=3,
         category=SettingCategory.TEMPMAIL,
         description="Tempmail 最大重试次数"
+    ),
+    "yyds_mail_enabled": SettingDefinition(
+        db_key="yyds_mail.enabled",
+        default_value=False,
+        category=SettingCategory.TEMPMAIL,
+        description="是否启用 YYDS Mail 渠道"
+    ),
+    "yyds_mail_base_url": SettingDefinition(
+        db_key="yyds_mail.base_url",
+        default_value="https://maliapi.215.im/v1",
+        category=SettingCategory.TEMPMAIL,
+        description="YYDS Mail API 地址"
+    ),
+    "yyds_mail_api_key": SettingDefinition(
+        db_key="yyds_mail.api_key",
+        default_value="",
+        category=SettingCategory.TEMPMAIL,
+        description="YYDS Mail API Key",
+        is_secret=True
+    ),
+    "yyds_mail_default_domain": SettingDefinition(
+        db_key="yyds_mail.default_domain",
+        default_value="",
+        category=SettingCategory.TEMPMAIL,
+        description="YYDS Mail 默认域名"
+    ),
+    "yyds_mail_timeout": SettingDefinition(
+        db_key="yyds_mail.timeout",
+        default_value=30,
+        category=SettingCategory.TEMPMAIL,
+        description="YYDS Mail 超时时间（秒）"
+    ),
+    "yyds_mail_max_retries": SettingDefinition(
+        db_key="yyds_mail.max_retries",
+        default_value=3,
+        category=SettingCategory.TEMPMAIL,
+        description="YYDS Mail 最大重试次数"
     ),
 
     # 自定义域名邮箱配置
@@ -487,8 +530,12 @@ SETTING_TYPES: Dict[str, Type] = {
     "registration_sleep_max": int,
     "registration_entry_flow": str,
     "email_service_priority": dict,
+    "tempmail_enabled": bool,
     "tempmail_timeout": int,
     "tempmail_max_retries": int,
+    "yyds_mail_enabled": bool,
+    "yyds_mail_timeout": int,
+    "yyds_mail_max_retries": int,
     "tm_enabled": bool,
     "cpa_enabled": bool,
     "email_code_timeout": int,
@@ -651,10 +698,10 @@ def _load_settings_from_db() -> Dict[str, Any]:
 
 def _save_settings_to_db(**kwargs) -> None:
     """保存设置到数据库"""
-    try:
-        from ..database.session import get_db
-        from ..database.crud import set_setting
+    from ..database.session import get_db, init_database
+    from ..database.crud import set_setting
 
+    def _write() -> None:
         with get_db() as db:
             for attr_name, value in kwargs.items():
                 if attr_name in SETTING_DEFINITIONS:
@@ -667,9 +714,18 @@ def _save_settings_to_db(**kwargs) -> None:
                         category=defn.category.value,
                         description=defn.description
                     )
-    except Exception as e:
+
+    try:
+        _write()
+    except RuntimeError as e:
         if "未初始化" not in str(e):
             print(f"[Settings] 保存设置到数据库失败: {e}")
+            raise
+        init_database()
+        _write()
+    except Exception as e:
+        print(f"[Settings] 保存设置到数据库失败: {e}")
+        raise
 
 
 class Settings(BaseModel):
@@ -776,12 +832,19 @@ class Settings(BaseModel):
     registration_entry_flow: str = "native"
 
     # 邮箱服务配置
-    email_service_priority: Dict[str, int] = {"tempmail": 0, "outlook": 1, "moe_mail": 2}
+    email_service_priority: Dict[str, int] = {"tempmail": 0, "yyds_mail": 1, "outlook": 2, "moe_mail": 3}
 
     # Tempmail.lol 配置
+    tempmail_enabled: bool = True
     tempmail_base_url: str = "https://api.tempmail.lol/v2"
     tempmail_timeout: int = 30
     tempmail_max_retries: int = 3
+    yyds_mail_enabled: bool = False
+    yyds_mail_base_url: str = "https://maliapi.215.im/v1"
+    yyds_mail_api_key: Optional[SecretStr] = None
+    yyds_mail_default_domain: str = ""
+    yyds_mail_timeout: int = 30
+    yyds_mail_max_retries: int = 3
 
     # 自定义域名邮箱配置
     custom_domain_base_url: str = ""
@@ -815,6 +878,17 @@ class Settings(BaseModel):
 _settings: Optional[Settings] = None
 
 
+def reload_settings() -> Settings:
+    """
+    强制从数据库重新加载全局配置实例。
+    """
+    global _settings
+    init_default_settings()
+    settings_dict = _load_settings_from_db()
+    _settings = Settings(**settings_dict)
+    return _settings
+
+
 def get_settings() -> Settings:
     """
     获取全局配置实例（单例模式）
@@ -822,11 +896,7 @@ def get_settings() -> Settings:
     """
     global _settings
     if _settings is None:
-        # 先初始化默认设置（如果数据库中没有的话）
-        init_default_settings()
-        # 从数据库加载所有设置
-        settings_dict = _load_settings_from_db()
-        _settings = Settings(**settings_dict)
+        _settings = reload_settings()
     return _settings
 
 
@@ -838,15 +908,20 @@ def update_settings(**kwargs) -> Settings:
     if _settings is None:
         _settings = get_settings()
 
-    # 创建新的配置实例
+    # 先用当前配置做一次完整校验，确保落库前值已标准化。
     updated_data = _settings.model_dump()
     updated_data.update(kwargs)
-    _settings = Settings(**updated_data)
+    validated_settings = Settings(**updated_data)
 
-    # 保存到数据库
-    _save_settings_to_db(**kwargs)
+    normalized_updates = {
+        attr_name: getattr(validated_settings, attr_name)
+        for attr_name in kwargs
+        if attr_name in SETTING_DEFINITIONS
+    }
+    if normalized_updates:
+        _save_settings_to_db(**normalized_updates)
 
-    return _settings
+    return reload_settings()
 
 
 def get_database_url() -> str:

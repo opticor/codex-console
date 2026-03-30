@@ -13,6 +13,7 @@ from ...database import crud
 from ...database.session import get_db
 from ...database.models import EmailService as EmailServiceModel
 from ...database.models import Account as AccountModel
+from ...config.settings import get_settings
 from ...services import EmailServiceFactory, EmailServiceType
 
 logger = logging.getLogger(__name__)
@@ -183,15 +184,25 @@ async def get_email_services_stats():
             EmailServiceModel.enabled == True
         ).scalar()
 
+        settings = get_settings()
+        tempmail_enabled = bool(settings.tempmail_enabled)
+        yyds_enabled = bool(
+            settings.yyds_mail_enabled
+            and settings.yyds_mail_api_key
+            and settings.yyds_mail_api_key.get_secret_value()
+        )
+
         stats = {
             'outlook_count': 0,
             'custom_count': 0,
+            'yyds_mail_count': 0,
             'temp_mail_count': 0,
             'duck_mail_count': 0,
             'freemail_count': 0,
             'imap_mail_count': 0,
             'cloudmail_count': 0,
-            'tempmail_available': True,  # 临时邮箱始终可用
+            'tempmail_available': tempmail_enabled or yyds_enabled,
+            'yyds_mail_available': yyds_enabled,
             'enabled_count': enabled_count
         }
 
@@ -200,6 +211,8 @@ async def get_email_services_stats():
                 stats['outlook_count'] = count
             elif service_type == 'moe_mail':
                 stats['custom_count'] = count
+            elif service_type == 'yyds_mail':
+                stats['yyds_mail_count'] = count
             elif service_type == 'temp_mail':
                 stats['temp_mail_count'] = count
             elif service_type == 'duck_mail':
@@ -222,9 +235,20 @@ async def get_service_types():
             {
                 "value": "tempmail",
                 "label": "Tempmail.lol",
-                "description": "临时邮箱服务，无需配置",
+                "description": "官方内置临时邮箱渠道，通过全局配置使用",
                 "config_fields": [
                     {"name": "base_url", "label": "API 地址", "default": "https://api.tempmail.lol/v2", "required": False},
+                    {"name": "timeout", "label": "超时时间", "default": 30, "required": False},
+                ]
+            },
+            {
+                "value": "yyds_mail",
+                "label": "YYDS Mail",
+                "description": "官方内置临时邮箱渠道，使用 X-API-Key 创建邮箱并轮询消息",
+                "config_fields": [
+                    {"name": "base_url", "label": "API 地址", "default": "https://maliapi.215.im/v1", "required": False},
+                    {"name": "api_key", "label": "API Key", "required": True, "secret": True},
+                    {"name": "default_domain", "label": "默认域名", "required": False, "placeholder": "public.example.com"},
                     {"name": "timeout", "label": "超时时间", "default": 30, "required": False},
                 ]
             },
@@ -663,29 +687,52 @@ async def batch_delete_outlook(service_ids: List[int]):
 
 class TempmailTestRequest(BaseModel):
     """临时邮箱测试请求"""
+    provider: str = "tempmail"
     api_url: Optional[str] = None
+    api_key: Optional[str] = None
 
 
 @router.post("/test-tempmail")
 async def test_tempmail_service(request: TempmailTestRequest):
     """测试临时邮箱服务是否可用"""
     try:
-        from ...services import EmailServiceFactory, EmailServiceType
-        from ...config.settings import get_settings
-
         settings = get_settings()
-        base_url = request.api_url or settings.tempmail_base_url
+        provider = str(request.provider or "tempmail").strip().lower()
 
-        config = {"base_url": base_url}
-        tempmail = EmailServiceFactory.create(EmailServiceType.TEMPMAIL, config)
+        if provider == "yyds_mail":
+            base_url = request.api_url or settings.yyds_mail_base_url
+            api_key = request.api_key
+            if api_key is None and settings.yyds_mail_api_key:
+                api_key = settings.yyds_mail_api_key.get_secret_value()
+
+            config = {
+                "base_url": base_url,
+                "api_key": api_key or "",
+                "default_domain": settings.yyds_mail_default_domain,
+                "timeout": settings.yyds_mail_timeout,
+                "max_retries": settings.yyds_mail_max_retries,
+            }
+            service = EmailServiceFactory.create(EmailServiceType.YYDS_MAIL, config)
+            success_message = "YYDS Mail 连接正常"
+            fail_message = "YYDS Mail 连接失败"
+        else:
+            base_url = request.api_url or settings.tempmail_base_url
+            config = {
+                "base_url": base_url,
+                "timeout": settings.tempmail_timeout,
+                "max_retries": settings.tempmail_max_retries,
+            }
+            service = EmailServiceFactory.create(EmailServiceType.TEMPMAIL, config)
+            success_message = "临时邮箱连接正常"
+            fail_message = "临时邮箱连接失败"
 
         # 检查服务健康状态
-        health = tempmail.check_health()
+        health = service.check_health()
 
         if health:
-            return {"success": True, "message": "临时邮箱连接正常"}
+            return {"success": True, "message": success_message}
         else:
-            return {"success": False, "message": "临时邮箱连接失败"}
+            return {"success": False, "message": fail_message}
 
     except Exception as e:
         logger.error(f"测试临时邮箱失败: {e}")

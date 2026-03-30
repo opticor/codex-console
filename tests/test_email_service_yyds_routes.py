@@ -18,8 +18,14 @@ class DummySettings:
     yyds_mail_base_url = "https://maliapi.215.im/v1"
     yyds_mail_api_key = SecretStr("AC-test-key")
     yyds_mail_default_domain = "public.example.com"
+    yyds_mail_timeout = 30
+    yyds_mail_max_retries = 3
     custom_domain_base_url = ""
     custom_domain_api_key = None
+
+
+class DisabledTempmailSettings(DummySettings):
+    tempmail_enabled = False
 
 
 def test_yyds_mail_service_registered():
@@ -135,3 +141,83 @@ def test_registration_available_services_include_custom_yyds_mail(monkeypatch):
     assert result["yyds_mail"]["services"][1]["name"] == "YYDS Mail Custom"
     assert result["yyds_mail"]["services"][1]["id"] is not None
     assert result["yyds_mail"]["services"][1]["default_domain"] == "custom.example.com"
+
+
+def test_registration_available_services_hide_tempmail_when_disabled(monkeypatch):
+    runtime_dir = Path("tests_runtime")
+    runtime_dir.mkdir(exist_ok=True)
+    db_path = runtime_dir / "disabled_tempmail_routes.db"
+    if db_path.exists():
+        db_path.unlink()
+
+    manager = DatabaseSessionManager(f"sqlite:///{db_path}")
+    Base.metadata.create_all(bind=manager.engine)
+
+    @contextmanager
+    def fake_get_db():
+        session = manager.SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    monkeypatch.setattr(registration_routes, "get_db", fake_get_db)
+
+    import src.config.settings as settings_module
+
+    monkeypatch.setattr(settings_module, "get_settings", lambda: DisabledTempmailSettings())
+    monkeypatch.setattr(registration_routes, "get_settings", lambda: DisabledTempmailSettings())
+
+    result = asyncio.run(registration_routes.get_available_email_services())
+
+    assert result["tempmail"]["available"] is False
+    assert result["tempmail"]["count"] == 0
+    assert result["tempmail"]["services"] == []
+    assert result["yyds_mail"]["available"] is True
+
+
+def test_email_service_stats_include_yyds_mail(monkeypatch):
+    runtime_dir = Path("tests_runtime")
+    runtime_dir.mkdir(exist_ok=True)
+    db_path = runtime_dir / "yyds_stats_routes.db"
+    if db_path.exists():
+        db_path.unlink()
+
+    manager = DatabaseSessionManager(f"sqlite:///{db_path}")
+    Base.metadata.create_all(bind=manager.engine)
+
+    with manager.session_scope() as session:
+        session.add(
+            EmailService(
+                service_type="yyds_mail",
+                name="YYDS Stats Service",
+                config={
+                    "base_url": "https://maliapi.custom.test/v1",
+                    "api_key": "AC-custom-key",
+                    "default_domain": "stats.example.com",
+                },
+                enabled=True,
+                priority=0,
+            )
+        )
+
+    @contextmanager
+    def fake_get_db():
+        session = manager.SessionLocal()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    monkeypatch.setattr(email_routes, "get_db", fake_get_db)
+
+    import src.config.settings as settings_module
+
+    monkeypatch.setattr(settings_module, "get_settings", lambda: DummySettings())
+    monkeypatch.setattr(email_routes, "get_settings", lambda: DummySettings())
+
+    result = asyncio.run(email_routes.get_email_services_stats())
+
+    assert result["yyds_mail_count"] == 1
+    assert result["yyds_mail_available"] is True
+    assert result["tempmail_available"] is True

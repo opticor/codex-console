@@ -326,6 +326,9 @@ def _normalize_email_service_config(
     if service_type == EmailServiceType.MOE_MAIL:
         if 'domain' in normalized and 'default_domain' not in normalized:
             normalized['default_domain'] = normalized.pop('domain')
+    elif service_type == EmailServiceType.YYDS_MAIL:
+        if 'domain' in normalized and 'default_domain' not in normalized:
+            normalized['default_domain'] = normalized.pop('domain')
     elif service_type in (EmailServiceType.TEMP_MAIL, EmailServiceType.FREEMAIL):
         if 'default_domain' in normalized and 'domain' not in normalized:
             normalized['domain'] = normalized.pop('default_domain')
@@ -369,10 +372,27 @@ def _build_email_service_for_task(
         return EmailServiceFactory.create(service_type, config)
 
     if service_type == EmailServiceType.TEMPMAIL:
+        if not settings.tempmail_enabled:
+            raise ValueError("Tempmail.lol 渠道已禁用，请先在邮箱服务页面启用")
         config = {
             "base_url": settings.tempmail_base_url,
             "timeout": settings.tempmail_timeout,
             "max_retries": settings.tempmail_max_retries,
+            "proxy_url": actual_proxy_url,
+        }
+        return EmailServiceFactory.create(service_type, config)
+
+    if service_type == EmailServiceType.YYDS_MAIL:
+        api_key = settings.yyds_mail_api_key.get_secret_value() if settings.yyds_mail_api_key else ""
+        if not settings.yyds_mail_enabled or not api_key:
+            raise ValueError("YYDS Mail 渠道未启用或未配置 API Key，请先在邮箱服务页面配置")
+
+        config = {
+            "base_url": settings.yyds_mail_base_url,
+            "api_key": api_key,
+            "default_domain": settings.yyds_mail_default_domain,
+            "timeout": settings.yyds_mail_timeout,
+            "max_retries": settings.yyds_mail_max_retries,
             "proxy_url": actual_proxy_url,
         }
         return EmailServiceFactory.create(service_type, config)
@@ -1370,14 +1390,19 @@ async def get_available_email_services():
     settings = get_settings()
     result = {
         "tempmail": {
-            "available": True,
-            "count": 1,
-            "services": [{
+            "available": bool(settings.tempmail_enabled),
+            "count": 1 if settings.tempmail_enabled else 0,
+            "services": ([{
                 "id": None,
                 "name": "Tempmail.lol",
                 "type": "tempmail",
                 "description": "临时邮箱，自动创建"
-            }]
+            }] if settings.tempmail_enabled else [])
+        },
+        "yyds_mail": {
+            "available": False,
+            "count": 0,
+            "services": []
         },
         "outlook": {
             "available": False,
@@ -1411,7 +1436,38 @@ async def get_available_email_services():
         }
     }
 
+    yyds_api_key = settings.yyds_mail_api_key.get_secret_value() if settings.yyds_mail_api_key else ""
+    if settings.yyds_mail_enabled and yyds_api_key:
+        result["yyds_mail"]["available"] = True
+        result["yyds_mail"]["count"] = 1
+        result["yyds_mail"]["services"].append({
+            "id": None,
+            "name": "YYDS Mail",
+            "type": "yyds_mail",
+            "default_domain": settings.yyds_mail_default_domain or None,
+            "description": "YYDS Mail API 临时邮箱",
+        })
+
     with get_db() as db:
+        yyds_mail_services = db.query(EmailServiceModel).filter(
+            EmailServiceModel.service_type == "yyds_mail",
+            EmailServiceModel.enabled == True
+        ).order_by(EmailServiceModel.priority.asc()).all()
+
+        for service in yyds_mail_services:
+            config = service.config or {}
+            result["yyds_mail"]["services"].append({
+                "id": service.id,
+                "name": service.name,
+                "type": "yyds_mail",
+                "default_domain": config.get("default_domain"),
+                "priority": service.priority
+            })
+
+        if yyds_mail_services:
+            result["yyds_mail"]["count"] = len(result["yyds_mail"]["services"])
+            result["yyds_mail"]["available"] = True
+
         # 获取 Outlook 账户
         outlook_services = db.query(EmailServiceModel).filter(
             EmailServiceModel.service_type == "outlook",

@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from ...config.settings import (
     get_settings,
     normalize_proxy_assignment_strategy,
+    reload_settings,
     update_settings,
 )
 from ...database import crud
@@ -119,6 +120,73 @@ def _verify_auto_quick_refresh_settings_persisted(
     return len(mismatches) == 0, mismatches
 
 
+def _serialize_tempmail_settings_payload(settings) -> Dict[str, Any]:
+    return {
+        "tempmail": {
+            "api_url": settings.tempmail_base_url,
+            "base_url": settings.tempmail_base_url,
+            "timeout": settings.tempmail_timeout,
+            "max_retries": settings.tempmail_max_retries,
+            "enabled": settings.tempmail_enabled,
+        },
+        "yyds_mail": {
+            "api_url": settings.yyds_mail_base_url,
+            "base_url": settings.yyds_mail_base_url,
+            "default_domain": settings.yyds_mail_default_domain,
+            "timeout": settings.yyds_mail_timeout,
+            "max_retries": settings.yyds_mail_max_retries,
+            "enabled": settings.yyds_mail_enabled,
+            "has_api_key": bool(settings.yyds_mail_api_key and settings.yyds_mail_api_key.get_secret_value()),
+        },
+    }
+
+
+def _verify_tempmail_settings_persisted(
+    request,
+    *,
+    previous_yyds_has_api_key: bool,
+) -> Tuple[bool, List[str], Dict[str, Any]]:
+    persisted_settings = reload_settings()
+    snapshot = _serialize_tempmail_settings_payload(persisted_settings)
+    mismatches: List[str] = []
+
+    if request.api_url is not None and snapshot["tempmail"]["api_url"] != request.api_url:
+        mismatches.append(
+            f"tempmail.api_url: expected={request.api_url}, actual={snapshot['tempmail']['api_url']}"
+        )
+    if request.enabled is not None and snapshot["tempmail"]["enabled"] is not request.enabled:
+        mismatches.append(
+            f"tempmail.enabled: expected={request.enabled}, actual={snapshot['tempmail']['enabled']}"
+        )
+    if request.yyds_api_url is not None and snapshot["yyds_mail"]["api_url"] != request.yyds_api_url:
+        mismatches.append(
+            f"yyds_mail.api_url: expected={request.yyds_api_url}, actual={snapshot['yyds_mail']['api_url']}"
+        )
+    if (
+        request.yyds_default_domain is not None
+        and snapshot["yyds_mail"]["default_domain"] != request.yyds_default_domain
+    ):
+        mismatches.append(
+            "yyds_mail.default_domain: "
+            f"expected={request.yyds_default_domain}, actual={snapshot['yyds_mail']['default_domain']}"
+        )
+    if request.yyds_enabled is not None and snapshot["yyds_mail"]["enabled"] is not request.yyds_enabled:
+        mismatches.append(
+            f"yyds_mail.enabled: expected={request.yyds_enabled}, actual={snapshot['yyds_mail']['enabled']}"
+        )
+    if request.yyds_api_key is not None:
+        expected_has_api_key = bool(request.yyds_api_key)
+        if snapshot["yyds_mail"]["has_api_key"] is not expected_has_api_key:
+            mismatches.append(
+                "yyds_mail.has_api_key: "
+                f"expected={expected_has_api_key}, actual={snapshot['yyds_mail']['has_api_key']}"
+            )
+    elif previous_yyds_has_api_key and not snapshot["yyds_mail"]["has_api_key"]:
+        mismatches.append("yyds_mail.has_api_key: expected saved key to remain, actual=False")
+
+    return len(mismatches) == 0, mismatches, snapshot
+
+
 # ============== API Endpoints ==============
 
 @router.get("")
@@ -172,9 +240,20 @@ async def get_all_settings():
             "probe_interval_seconds": int(getattr(settings, "circuit_breaker_probe_interval_seconds", 30) or 30),
         },
         "tempmail": {
+            "enabled": settings.tempmail_enabled,
+            "api_url": settings.tempmail_base_url,
             "base_url": settings.tempmail_base_url,
             "timeout": settings.tempmail_timeout,
             "max_retries": settings.tempmail_max_retries,
+        },
+        "yyds_mail": {
+            "enabled": settings.yyds_mail_enabled,
+            "api_url": settings.yyds_mail_base_url,
+            "base_url": settings.yyds_mail_base_url,
+            "default_domain": settings.yyds_mail_default_domain,
+            "timeout": settings.yyds_mail_timeout,
+            "max_retries": settings.yyds_mail_max_retries,
+            "has_api_key": bool(settings.yyds_mail_api_key and settings.yyds_mail_api_key.get_secret_value()),
         },
         "email_code": {
             "timeout": settings.email_code_timeout,
@@ -635,7 +714,11 @@ async def get_recent_logs(
 class TempmailSettings(BaseModel):
     """临时邮箱设置"""
     api_url: Optional[str] = None
-    enabled: bool = True
+    enabled: Optional[bool] = None
+    yyds_api_url: Optional[str] = None
+    yyds_api_key: Optional[str] = None
+    yyds_default_domain: Optional[str] = None
+    yyds_enabled: Optional[bool] = None
 
 
 class EmailCodeSettings(BaseModel):
@@ -648,26 +731,50 @@ class EmailCodeSettings(BaseModel):
 async def get_tempmail_settings():
     """获取临时邮箱设置"""
     settings = get_settings()
-
-    return {
-        "api_url": settings.tempmail_base_url,
-        "timeout": settings.tempmail_timeout,
-        "max_retries": settings.tempmail_max_retries,
-        "enabled": True  # 临时邮箱默认可用
-    }
+    return _serialize_tempmail_settings_payload(settings)
 
 
 @router.post("/tempmail")
 async def update_tempmail_settings(request: TempmailSettings):
     """更新临时邮箱设置"""
+    current_settings = get_settings()
+    previous_yyds_has_api_key = bool(
+        current_settings.yyds_mail_api_key and current_settings.yyds_mail_api_key.get_secret_value()
+    )
     update_dict = {}
 
-    if request.api_url:
+    if request.api_url is not None:
         update_dict["tempmail_base_url"] = request.api_url
+    if request.enabled is not None:
+        update_dict["tempmail_enabled"] = request.enabled
+    if request.yyds_api_url is not None:
+        update_dict["yyds_mail_base_url"] = request.yyds_api_url
+    if request.yyds_api_key is not None:
+        update_dict["yyds_mail_api_key"] = request.yyds_api_key
+    if request.yyds_default_domain is not None:
+        update_dict["yyds_mail_default_domain"] = request.yyds_default_domain
+    if request.yyds_enabled is not None:
+        update_dict["yyds_mail_enabled"] = request.yyds_enabled
 
-    update_settings(**update_dict)
+    if update_dict:
+        update_settings(**update_dict)
 
-    return {"success": True, "message": "临时邮箱设置已更新"}
+    persisted_ok, mismatches, snapshot = _verify_tempmail_settings_persisted(
+        request,
+        previous_yyds_has_api_key=previous_yyds_has_api_key,
+    )
+    if not persisted_ok:
+        logger.error("临时邮箱设置落库校验失败: %s", "; ".join(mismatches))
+        raise HTTPException(
+            status_code=500,
+            detail="临时邮箱设置保存失败（数据库写入未生效），请重试",
+        )
+
+    return {
+        "success": True,
+        "message": "临时邮箱设置已更新",
+        **snapshot,
+    }
 
 
 # ============== 验证码等待设置 ==============

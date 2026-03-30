@@ -26,12 +26,14 @@ let batchFinalStatus = null;  // 保存批量任务的最终状态
 let displayedLogs = new Set();  // 用于日志去重
 let toastShown = false;  // 标记是否已显示过 toast
 let availableServices = {
-    tempmail: { available: true, services: [] },
+    tempmail: { available: false, services: [] },
+    yyds_mail: { available: false, services: [] },
     outlook: { available: false, services: [] },
     moe_mail: { available: false, services: [] },
     temp_mail: { available: false, services: [] },
     duck_mail: { available: false, services: [] },
-    freemail: { available: false, services: [] }
+    freemail: { available: false, services: [] },
+    imap_mail: { available: false, services: [] }
 };
 
 // WebSocket 相关变量
@@ -279,6 +281,24 @@ function updateEmailServiceOptions() {
         select.appendChild(optgroup);
     }
 
+    if (availableServices.yyds_mail && availableServices.yyds_mail.available) {
+        const optgroup = document.createElement('optgroup');
+        optgroup.label = `⚡ YYDS Mail (${availableServices.yyds_mail.count} 个服务)`;
+
+        availableServices.yyds_mail.services.forEach(service => {
+            const option = document.createElement('option');
+            option.value = `yyds_mail:${service.id || 'default'}`;
+            option.textContent = service.name + (service.default_domain ? ` (@${service.default_domain})` : '');
+            option.dataset.type = 'yyds_mail';
+            if (service.id) {
+                option.dataset.serviceId = service.id;
+            }
+            optgroup.appendChild(option);
+        });
+
+        select.appendChild(optgroup);
+    }
+
     // Outlook
     if (availableServices.outlook.available) {
         const optgroup = document.createElement('optgroup');
@@ -433,6 +453,11 @@ function handleServiceChange(e) {
         const service = availableServices.temp_mail.services.find(s => s.id == id);
         if (service) {
             addLog('info', `[系统] 已选择 Temp-Mail 自部署服务: ${service.name}`);
+        }
+    } else if (type === 'yyds_mail') {
+        const service = availableServices.yyds_mail.services.find(s => String(s.id || 'default') === String(id));
+        if (service) {
+            addLog('info', `[系统] 已选择 YYDS Mail 服务: ${service.name}`);
         }
     } else if (type === 'duck_mail') {
         const service = availableServices.duck_mail.services.find(s => s.id == id);

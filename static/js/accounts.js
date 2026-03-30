@@ -265,17 +265,62 @@ const elements = {
     saveAutoQuickRefreshBtn: document.getElementById('save-auto-quick-refresh-btn'),
 };
 
+function renderEmailServiceFilterOptions(items = []) {
+    if (!elements.filterService) return;
+
+    const currentValue = String(elements.filterService.value || '').trim();
+    const options = Array.isArray(items) ? items : [];
+    const seenValues = new Set(['']);
+    const html = ['<option value="">全部邮箱服务</option>'];
+
+    options.forEach((item) => {
+        const value = String(item?.value || '').trim();
+        if (!value || seenValues.has(value)) return;
+
+        seenValues.add(value);
+        const label = String(item?.label || getServiceTypeText(value) || value).trim() || value;
+        const titleParts = [];
+        if (item?.source === 'settings') titleParts.push('全局配置');
+        if (item?.source === 'database') titleParts.push('自定义服务');
+        if (Number(item?.count || 0) > 0) titleParts.push(`已启用 ${Number(item.count)} 条`);
+        const titleAttr = titleParts.length ? ` title="${escapeHtml(titleParts.join('，'))}"` : '';
+        html.push(`<option value="${escapeHtml(value)}"${titleAttr}>${escapeHtml(label)}</option>`);
+    });
+
+    elements.filterService.innerHTML = html.join('');
+    elements.filterService.value = seenValues.has(currentValue) ? currentValue : '';
+}
+
+async function loadFilterOptions() {
+    try {
+        const result = await api.get('/accounts/filter-options', {
+            requestKey: 'accounts:filter-options',
+            cancelPrevious: true,
+            retry: 1,
+        });
+        renderEmailServiceFilterOptions(result?.email_services || []);
+        return result;
+    } catch (error) {
+        console.error('加载邮箱服务筛选项失败:', error);
+        renderEmailServiceFilterOptions([]);
+        return null;
+    }
+}
+
 // 初始化
 document.addEventListener('DOMContentLoaded', () => {
+    initEventListeners();
+    updateBatchButtons();  // 初始化按钮状态
+    renderSelectAllBanner();
+
     loadStats();
-    loadAccounts();
     loadAutoQuickRefreshSettings({ silent: true });
     setInterval(() => {
         loadAutoQuickRefreshSettings({ silent: true });
     }, 30000);
-    initEventListeners();
-    updateBatchButtons();  // 初始化按钮状态
-    renderSelectAllBanner();
+    loadFilterOptions().finally(() => {
+        loadAccounts();
+    });
 });
 
 // 事件监听

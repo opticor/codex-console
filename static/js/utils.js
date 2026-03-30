@@ -666,9 +666,11 @@ const statusMap = {
     },
     service: {
         tempmail: 'Tempmail.lol',
+        yyds_mail: 'YYDS Mail',
         outlook: 'Outlook',
         moe_mail: 'MoeMail',
         temp_mail: 'Temp-Mail（自部署）',
+        cloudmail: 'CloudMail（自部署）',
         duck_mail: 'DuckMail',
         freemail: 'Freemail',
         imap_mail: 'IMAP 邮箱'

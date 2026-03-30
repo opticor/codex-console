@@ -577,6 +577,68 @@ def _apply_any_uploaded_filter(query):
     )
 
 
+def _get_account_filter_email_services(db) -> List[Dict[str, Any]]:
+    """构建账号页可用的邮箱服务筛选项，只返回当前可用/已启用的服务类型。"""
+    settings = get_settings()
+    items: List[Dict[str, Any]] = []
+
+    if settings.tempmail_enabled:
+        items.append(
+            {
+                "value": "tempmail",
+                "label": "Tempmail.lol",
+                "source": "settings",
+            }
+        )
+
+    yyds_api_key = settings.yyds_mail_api_key.get_secret_value() if settings.yyds_mail_api_key else ""
+    if settings.yyds_mail_enabled and yyds_api_key:
+        items.append(
+            {
+                "value": "yyds_mail",
+                "label": "YYDS Mail",
+                "source": "settings",
+            }
+        )
+
+    from ...database.models import EmailService as EmailServiceModel
+
+    service_order = [
+        ("outlook", "Outlook"),
+        ("moe_mail", "MoeMail"),
+        ("temp_mail", "Temp-Mail（自部署）"),
+        ("cloudmail", "CloudMail（自部署）"),
+        ("duck_mail", "DuckMail"),
+        ("freemail", "Freemail"),
+        ("imap_mail", "IMAP 邮箱"),
+    ]
+    type_stats = (
+        db.query(EmailServiceModel.service_type, func.count(EmailServiceModel.id))
+        .filter(
+            EmailServiceModel.enabled.is_(True),
+            EmailServiceModel.service_type.in_([service_type for service_type, _ in service_order]),
+        )
+        .group_by(EmailServiceModel.service_type)
+        .all()
+    )
+    count_map = {service_type: int(count or 0) for service_type, count in type_stats}
+
+    for service_type, label in service_order:
+        count = count_map.get(service_type, 0)
+        if count <= 0:
+            continue
+        items.append(
+            {
+                "value": service_type,
+                "label": label,
+                "source": "database",
+                "count": count,
+            }
+        )
+
+    return items
+
+
 def _apply_no_uploaded_filter(query):
     return query.filter(
         Account.cpa_uploaded.isnot(True),
@@ -1443,6 +1505,15 @@ async def list_accounts(
             total=total,
             accounts=[account_to_response(acc) for acc in accounts]
         )
+
+
+@router.get("/filter-options")
+async def get_account_filter_options():
+    """获取账号页动态筛选选项。"""
+    with get_db() as db:
+        return {
+            "email_services": _get_account_filter_email_services(db),
+        }
 
 
 @router.get("/overview/cards")
