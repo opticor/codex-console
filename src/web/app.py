@@ -13,7 +13,6 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from ..config.project_notice import PROJECT_NOTICE
 from ..config.settings import get_settings, update_settings
 from .auth import (
     build_auth_token,
@@ -174,7 +173,6 @@ def create_app() -> FastAPI:
 
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.globals["static_version"] = _build_static_asset_version(STATIC_DIR)
-    templates.env.globals["project_notice"] = PROJECT_NOTICE
 
     def _render_template(
         request: Request,
