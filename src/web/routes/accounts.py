@@ -31,10 +31,11 @@ from ...config.constants import (
     role_tag_to_account_label,
 )
 from ...config.settings import get_settings
-from ...core.openai.overview import fetch_codex_overview
+from ...core.openai.overview import AccountDeactivatedError, fetch_codex_overview
 from ...core.openai.token_refresh import refresh_account_token as do_refresh
 from ...core.openai.token_refresh import validate_account_token as do_validate
 from ...core.upload.cpa_upload import generate_token_json, batch_upload_to_cpa, upload_to_cpa
+from ...core.upload.new_api_upload import batch_upload_to_new_api, upload_to_new_api
 from ...core.upload.team_manager_upload import upload_to_team_manager, batch_upload_to_team_manager
 from ...core.upload.sub2api_upload import batch_upload_to_sub2api, upload_to_sub2api
 
@@ -81,6 +82,7 @@ _account_async_executor = ThreadPoolExecutor(
     max_workers=ACCOUNT_ASYNC_EXECUTOR_MAX_WORKERS,
     thread_name_prefix="account_async",
 )
+_QUICK_REFRESH_WORKFLOW_LOCK = threading.Lock()
 
 
 def _get_proxy(request_proxy: Optional[str] = None) -> Optional[str]:
@@ -91,6 +93,17 @@ def _get_proxy(request_proxy: Optional[str] = None) -> Optional[str]:
     with get_db() as db:
         result = resolve_auto_proxy_for_task(settings=settings, db=db)
     return result.proxy_url
+
+
+def _get_quick_refresh_candidate_ids() -> List[int]:
+    with get_db() as db:
+        query = (
+            db.query(Account.id)
+            .filter(func.length(func.trim(func.coalesce(Account.access_token, ""))) > 0)
+            .filter(~Account.status.in_((AccountStatus.FAILED.value, AccountStatus.BANNED.value)))
+            .order_by(Account.id.asc())
+        )
+        return [int(row[0]) for row in query.all()]
 
 
 def _apply_status_filter(query, status: Optional[str]):
@@ -1119,6 +1132,17 @@ def _get_account_overview_data(
         account.extra_data = merged_extra
         updated = True
         return overview, updated
+    except AccountDeactivatedError as exc:
+        logger.warning("账号被停用: email=%s err=%s", account.email, exc)
+        account.status = AccountStatus.BANNED.value
+        merged_extra = dict(extra_data)
+        merged_extra[OVERVIEW_EXTRA_DATA_KEY] = _fallback_overview(
+            account, error_message="account_deactivated", stale=True
+        )
+        merged_extra["account_deactivated_at"] = datetime.now(timezone.utc).isoformat()
+        account.extra_data = merged_extra
+        updated = True
+        return merged_extra[OVERVIEW_EXTRA_DATA_KEY], updated
     except Exception as exc:
         logger.warning(f"刷新账号[{account.email}]总览失败: {exc}")
         if cached:
@@ -2651,13 +2675,26 @@ def _task_terminal_error(task_snapshot: Dict[str, Any], default_message: str) ->
 
 
 def has_active_batch_operations() -> bool:
-    active_status = {"pending", "running"}
+    if _QUICK_REFRESH_WORKFLOW_LOCK.locked():
+        return True
+
+    active_status = {"pending", "running", "paused"}
     account_task_types = {"batch_refresh", "batch_validate", "overview_refresh", "quick_refresh"}
     with _account_async_tasks_lock:
         for task in _account_async_tasks.values():
             status = str(task.get("status") or "").lower()
             task_type = str(task.get("task_type") or "").strip().lower()
             if status in active_status and task_type in account_task_types:
+                return True
+
+    for domain in ("accounts", "payment"):
+        try:
+            tasks = task_manager.list_domain_tasks(domain=domain, limit=50)
+        except Exception:
+            continue
+        for task in tasks:
+            status = str(task.get("status") or "").strip().lower()
+            if status in active_status:
                 return True
 
     try:
@@ -2700,52 +2737,87 @@ def run_quick_refresh_workflow(
     email_service_filter: Optional[str] = None,
     search_filter: Optional[str] = None,
 ) -> Dict[str, Any]:
-    payload = {
-        "ids": [],
-        "proxy": proxy,
-        "select_all": bool(select_all),
-        "status_filter": status_filter,
-        "email_service_filter": email_service_filter,
-        "search_filter": search_filter,
-    }
+    if not _QUICK_REFRESH_WORKFLOW_LOCK.acquire(blocking=False):
+        raise RuntimeError("quick_refresh_workflow_busy")
 
-    # 1) 批量验证
-    validate_task = start_batch_validate_async(BatchValidateRequest(**payload))
-    validate_task_id = str(validate_task.get("id") or "")
-    if not validate_task_id:
-        raise RuntimeError("创建批量验证任务失败：缺少 task_id")
-    validate_final = _wait_account_async_task_finished(validate_task_id)
-    validate_error = _task_terminal_error(validate_final, "批量验证任务失败")
-    if validate_error:
-        raise RuntimeError(f"批量验证失败: {validate_error}")
-    validate_result = _compact_validate_result(validate_final.get("result") or {})
+    started_at = datetime.now(timezone.utc)
+    proxy_used = _get_proxy(proxy)
 
-    # 2) 批量检测订阅
-    from . import payment as payment_routes
+    try:
+        if select_all and not any([status_filter, email_service_filter, search_filter]):
+            candidate_ids = _get_quick_refresh_candidate_ids()
+        else:
+            with get_db() as db:
+                candidate_ids = resolve_account_ids(
+                    db,
+                    [],
+                    bool(select_all),
+                    status_filter,
+                    email_service_filter,
+                    None,
+                    None,
+                    None,
+                    None,
+                    search_filter,
+                )
 
-    subscription_task = payment_routes.start_batch_check_subscription_async(
-        payment_routes.BatchCheckSubscriptionRequest(**payload)
-    )
-    subscription_task_id = str(subscription_task.get("id") or "")
-    if not subscription_task_id:
-        raise RuntimeError("创建批量订阅检测任务失败：缺少 op_task_id")
-    subscription_final = _wait_payment_op_task_finished(subscription_task_id)
-    subscription_error = _task_terminal_error(subscription_final, "批量订阅检测任务失败")
-    if subscription_error:
-        raise RuntimeError(f"批量检测订阅失败: {subscription_error}")
-    subscription_raw = subscription_final.get("result") or {}
-    subscription_result = {
-        "success_count": int(subscription_raw.get("success_count") or 0),
-        "failed_count": int(subscription_raw.get("failed_count") or 0),
-        "total": int(subscription_raw.get("total") or 0),
-    }
+        validate_summary: Dict[str, Any] = {
+            "total": len(candidate_ids),
+            "valid_count": 0,
+            "invalid_count": 0,
+            "details": [],
+        }
+        subscription_summary: Dict[str, Any] = {
+            "total": 0,
+            "success_count": 0,
+            "failed_count": 0,
+            "details": [],
+        }
 
-    return {
-        "source": source,
-        "finished_at": _utc_now_iso(),
-        "validate": validate_result,
-        "subscription": subscription_result,
-    }
+        if candidate_ids:
+            validate_result = _run_batch_validate_tokens(
+                BatchValidateRequest(
+                    ids=candidate_ids,
+                    proxy=proxy_used,
+                    select_all=False,
+                )
+            )
+            validate_summary.update(validate_result or {})
+            validate_summary["total"] = len(candidate_ids)
+
+            valid_ids = [
+                int(detail.get("id"))
+                for detail in (validate_result or {}).get("details", [])
+                if detail.get("valid") and detail.get("id") is not None
+            ]
+
+            if valid_ids:
+                from . import payment as payment_routes
+
+                subscription_result = payment_routes.batch_check_subscription(
+                    payment_routes.BatchCheckSubscriptionRequest(
+                        ids=valid_ids,
+                        proxy=proxy_used,
+                        select_all=False,
+                    )
+                )
+                subscription_summary.update(subscription_result or {})
+                subscription_summary["total"] = len(valid_ids)
+
+        finished_at = datetime.now(timezone.utc)
+        duration_ms = max(0, int((finished_at - started_at).total_seconds() * 1000))
+        return {
+            "source": str(source or "manual"),
+            "started_at": started_at.isoformat(),
+            "finished_at": finished_at.isoformat(),
+            "duration_ms": duration_ms,
+            "candidate_count": len(candidate_ids),
+            "proxy_used": proxy_used,
+            "validate": validate_summary,
+            "subscription": subscription_summary,
+        }
+    finally:
+        _QUICK_REFRESH_WORKFLOW_LOCK.release()
 
 
 def _is_retryable_refresh_error(error_message: Optional[str]) -> bool:
@@ -3823,13 +3895,13 @@ def refresh_account_token(account_id: int, request: Optional[TokenRefreshRequest
         }
 
 
-@router.post("/batch-validate")
-def batch_validate_tokens(request: BatchValidateRequest):
-    """批量验证账号 Token 有效性（并发执行）。"""
+def _run_batch_validate_tokens(request: BatchValidateRequest) -> Dict[str, Any]:
+    """同步执行批量验证，供路由与自动调度共用。"""
     started = time.perf_counter()
     proxy = _get_proxy(request.proxy)
 
     results = {
+        "total": 0,
         "valid_count": 0,
         "invalid_count": 0,
         "details": [],
@@ -3847,6 +3919,7 @@ def batch_validate_tokens(request: BatchValidateRequest):
             request.cpa_uploaded_filter, request.sub2api_uploaded_filter,
             request.search_filter
         )
+        results["total"] = len(ids)
 
     if not ids:
         results["duration_ms"] = int((time.perf_counter() - started) * 1000)
@@ -3887,6 +3960,12 @@ def batch_validate_tokens(request: BatchValidateRequest):
         proxy or "-",
     )
     return results
+
+
+@router.post("/batch-validate")
+def batch_validate_tokens(request: BatchValidateRequest):
+    """批量验证账号 Token 有效性（并发执行）。"""
+    return _run_batch_validate_tokens(request)
 
 
 @router.post("/{account_id}/validate")
@@ -4124,6 +4203,89 @@ async def upload_account_to_sub2api(account_id: int, request: Optional[Sub2ApiUp
             return {"success": True, "message": message}
         else:
             return {"success": False, "error": message}
+
+
+class NewApiUploadRequest(BaseModel):
+    """单账号 new-api 上传请求"""
+    service_id: Optional[int] = None
+
+
+class BatchNewApiUploadRequest(BaseModel):
+    """批量 new-api 上传请求"""
+    ids: List[int] = []
+    select_all: bool = False
+    status_filter: Optional[str] = None
+    email_service_filter: Optional[str] = None
+    upload_targets_filter: Optional[List[str]] = None
+    uploaded_filter: Optional[bool] = None
+    cpa_uploaded_filter: Optional[bool] = None
+    sub2api_uploaded_filter: Optional[bool] = None
+    search_filter: Optional[str] = None
+    service_id: Optional[int] = None
+
+
+@router.post("/batch-upload-new-api")
+async def batch_upload_accounts_to_new_api(request: BatchNewApiUploadRequest):
+    """批量上传账号到 new-api。"""
+    with get_db() as db:
+        if request.service_id:
+            service = crud.get_new_api_service_by_id(db, request.service_id)
+        else:
+            services = crud.get_new_api_services(db, enabled=True)
+            service = services[0] if services else None
+
+        if not service:
+            raise HTTPException(status_code=400, detail="未找到可用的 new-api 服务，请先在设置中配置")
+
+        ids = resolve_account_ids(
+            db,
+            request.ids,
+            request.select_all,
+            request.status_filter,
+            request.email_service_filter,
+            request.upload_targets_filter,
+            request.uploaded_filter,
+            request.cpa_uploaded_filter,
+            request.sub2api_uploaded_filter,
+            request.search_filter,
+        )
+
+    return batch_upload_to_new_api(
+        ids,
+        service.api_url,
+        getattr(service, "username", None),
+        getattr(service, "password", None),
+    )
+
+
+@router.post("/{account_id}/upload-new-api")
+async def upload_account_to_new_api(account_id: int, request: Optional[NewApiUploadRequest] = Body(default=None)):
+    """上传单个账号到 new-api。"""
+    service_id = request.service_id if request else None
+
+    with get_db() as db:
+        if service_id:
+            service = crud.get_new_api_service_by_id(db, service_id)
+        else:
+            services = crud.get_new_api_services(db, enabled=True)
+            service = services[0] if services else None
+
+        if not service:
+            raise HTTPException(status_code=400, detail="未找到可用的 new-api 服务，请先在设置中配置")
+
+        account = crud.get_account_by_id(db, account_id)
+        if not account:
+            raise HTTPException(status_code=404, detail="账号不存在")
+        if not account.access_token:
+            return {"success": False, "error": "账号缺少 Token，无法上传"}
+
+        success, message = upload_to_new_api(
+            [account],
+            service.api_url,
+            getattr(service, "username", None),
+            getattr(service, "password", None),
+        )
+        return {"success": success, "message": message if success else None, "error": None if success else message}
 
 
 # ============== Team Manager 上传 ==============

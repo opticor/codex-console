@@ -58,6 +58,7 @@ class EmailServiceType(str, Enum):
     MOE_MAIL = "moe_mail"
     TEMP_MAIL = "temp_mail"
     DUCK_MAIL = "duck_mail"
+    LUCKMAIL = "luckmail"
     FREEMAIL = "freemail"
     IMAP_MAIL = "imap_mail"
     CLOUDMAIL = "cloudmail"
@@ -118,7 +119,7 @@ def account_label_to_role_tag(account_label: str) -> str:
 # ============================================================================
 
 APP_NAME = "OpenAI/Codex CLI 自动注册系统"
-APP_VERSION = "2.0.0"
+APP_VERSION = "1.1.2"
 APP_DESCRIPTION = "自动注册 OpenAI/Codex CLI 账号的系统"
 
 # ============================================================================
@@ -249,7 +250,8 @@ OPENAI_VERIFICATION_KEYWORDS = [
 ]
 
 # 密码生成
-PASSWORD_CHARSET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+PASSWORD_SPECIAL_CHARSET = "!@#$%^&*_-+="
+PASSWORD_CHARSET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" + PASSWORD_SPECIAL_CHARSET
 DEFAULT_PASSWORD_LENGTH = 12
 
 # 用户信息生成（用于注册）
